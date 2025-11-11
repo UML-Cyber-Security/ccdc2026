@@ -38,6 +38,7 @@ Install-ADDSForest `
 then reboot the machine
 
 ### CA installation (GUI):
+Make sure to log on as Domain\Administrator
 1. check if the CA is joined to the AD machine, if not join it.
 2. Open Server Manager → click Manage → Add Roles and Features.
 3. Select the local server → click Next.
@@ -55,6 +56,7 @@ then reboot the machine
 13. Verify the CA service is running:
 	- Open Server Manager → Tools → Certification Authority
 ### Install CA (PowerShell):
+Make sure to log on as Domain\Administrator\
 open PowerShell as administrator and run:
 ```powershell
 Install-WindowsFeature AD-Certificate -IncludeManagementTools 
