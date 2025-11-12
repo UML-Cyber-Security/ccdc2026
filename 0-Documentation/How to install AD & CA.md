@@ -23,7 +23,7 @@ How to install and AD & CA
   5. Let prerequisite check run → if no blocking errors, click Install 
   6. Server will reboot and come back as a domain controller for the new forest
 
-### install AD DS (PowerShell):
+## install AD DS (PowerShell):
 Open PowerShell as administrator and run:
 ```powershell
 Install-WindowsFeature AD-Domain-Services -IncludeManagementTools\
@@ -38,26 +38,26 @@ Install-ADDSForest `
 ```
 Then reboot the machine.
 
-### CA installation (GUI):
+## CA installation (GUI):
 > [!IMPORTANT]
 > Make sure to log on as Domain\Administrator
-1. check if the CA is joined to the AD machine, if not join it.
-2. Open Server Manager → click Manage → Add Roles and Features.
-3. Select the local server → click Next.
-4. Under Server Roles, select Active Directory Certificate Services.
-	- Click Add Features when prompted.
-5. When installation finishes, click Configure Active Directory Certificate Services on the destination server.
-6. On Role Services, check Certification Authority (and optionally Certification Authority Web Enrollment - not required for CCDC but was nice when I tried it).
+1. check if the CA is joined to the AD machine, if not join it
+2. Open Server Manager → click Manage → Add Roles and Features
+3. Select the local server → click Next
+4. Under Server Roles, select Active Directory Certificate Services
+	- Click Add Features when prompted
+5. When installation finishes, click Configure Active Directory Certificate Services on the destination server
+6. On Role Services, check Certification Authority (and optionally Certification Authority Web Enrollment - not required for CCDC but was nice when I tried it)
 7. On Setup Type, choose: Enterprise CA
 8. On CA Type, choose Root CA (first CA in hierarchy)
 9. On Private Key, choose:
 	- Create a new private key for a new CA
-10. Choose cryptographic options (RSA 2048) → Next.
-11. On CA Name, accept default (e.g., ZODU-CA) or customize.
-12. On CA Database, leave defaults or specify custom paths → Next → Configure.
+10. Choose cryptographic options (RSA 2048) → Next
+11. On CA Name, accept default (e.g., ZODU-CA) or customize
+12. On CA Database, leave defaults or specify custom paths → Next → Configure
 13. Verify the CA service is running:
 	- Open Server Manager → Tools → Certification Authority
-### Install CA (PowerShell):
+## Install CA (PowerShell):
 > [!IMPORTANT]
 > Make sure to log on as Domain\Administrator
 Open PowerShell as administrator and run:
