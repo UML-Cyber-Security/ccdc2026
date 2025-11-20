@@ -1,0 +1,78 @@
+# Automating LogonTracer with Ansible  
+Author: Irakli and Ofir\
+Automating LogonTracer with Ansible 
+
+For LogonTracer to be useful, it needs to uploads the security logs of every Windows machine automatically. Since manually uploading and updating logs is unrealistic, this automation handles the entire process end-to-end every 30 minutes using a cron job.
+
+The goal of this script is to automatically take the logs of every Windows machine gathered on the AD through a log subscription, as well as the logs of the AD itself, move them to the machine running Ansible, then to the Linux machine running LogonTracer. There, the files are moved into the LogonTracer Docker container and uploaded using the built-in LogonTracer script. This is the basic overview.
+
+# Automation Structure
+
+The automation is broken in to two palybooks as to be able to run the main actions (1.get the needed logs to a folder 2.get them to logontracer) seperatly. They are both triggered by a cron job playbook as follows:
+ 
+
+## 1. Cron Scheduling (Local Machine)
+
+A cron job is installed on the Ansible controller that runs:
+
+`/home/user/ansible/run.sh`
+
+every **30 minutes**, which triggeres the extract file first and the uplaod file second.
+
+
+## 2. Export Logs on AD - extract.yml
+
+This play is executed first. It exports the filtered Security logs that LogonTracer needs.  
+Files created:
+
+- `AD_Local_<timestamp>.evtx`
+- `Forwarded_<timestamp>.evtx`
+
+Saved to:
+
+`C:\Logs\Combined`
+
+## 3. Find and Fetch EVTX Logs (Windows AD) - uplaod.yml
+
+### **Locate Latest Logs**
+
+The play searches in:
+
+`C:\Logs\Combined`
+
+for the newest:
+
+- `AD_Local_*.evtx`
+- `Forwarded_*.evtx`
+
+These contain filtered Security logs from the Domain Controller and from all Windows machines via the log subscription.
+
+### **Fetch Logs to Controller**
+
+Both EVTX files are fetched to the Ansible controller at:
+
+`/tmp/logontracer/`
+
+The fetched paths are stored for use in the upload stage.
+
+
+## 4. Upload to LogonTracer and Run Import
+
+### **Host and Container Preparation**
+
+The play ensures required directories exist both on the Linux host and inside the LogonTracer Docker container:
+
+- `/opt/logontracer/incoming`
+- `/usr/local/src/LogonTracer/incoming`
+
+### **Copy EVTX Files**
+
+The controller copies the AD_Local and Forwarded EVTX files to the host, then into the container using `docker cp`.
+
+### **Trigger Ingestion**
+
+The LogonTracer import is executed inside the container:
+
+`logontracer.py -e ad_local.evtx forwarded.evtx -z -5 -u neo4j -p password -s localhost`
+
+This updates the LogonTracer Neo4j database with new login activity to be viewable in webview.
