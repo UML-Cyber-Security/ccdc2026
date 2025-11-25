@@ -1,0 +1,140 @@
+- name: Find EVTX files on Windows AD
+  hosts: ad
+  gather_facts: false
+
+  tasks:
+    - name: Find AD_Local and Forwarded EVTX files in C:\Logs\Combined
+      ansible.windows.win_shell: |
+        $folder = 'C:\Logs\Combined'
+        if (Test-Path $folder) {
+            $local = Get-ChildItem -Path $folder -Filter 'AD_Local_*.evtx' |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+            $fwd = Get-ChildItem -Path $folder -Filter 'Forwarded_*.evtx' |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+            "$local|$fwd"
+        }
+      register: evtx_paths_raw
+      changed_when: false
+
+    - name: Fail if none found
+      ansible.builtin.fail:
+        msg: "No EVTX files found on the Windows AD machine."
+      when: evtx_paths_raw.stdout | trim == "|" or evtx_paths_raw.stdout | trim == ""
+
+    - name: Save EVTX paths as facts
+      ansible.builtin.set_fact:
+        local_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[0] }}"
+        forwarded_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[1] }}"
+
+###############################################################
+# PLAY 2 — CONTROLLER: Fetch EVTX from Windows AD → controller
+###############################################################
+- name: Fetch EVTX from Windows AD to Ansible controller
+  hosts: ad
+  gather_facts: false
+
+  tasks:
+    - name: Ensure local temp folder exists
+      ansible.builtin.file:
+        path: /tmp/logontracer
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+
+    - name: Fetch Forwarded EVTX file to controller
+      ansible.builtin.fetch:
+        src: "{{ forwarded_evtx }}"
+        dest: /tmp/logontracer/
+        flat: true
+      register: fetch_forwarded
+
+    - name: Fetch AD_Local EVTX file to controller
+      ansible.builtin.fetch:
+        src: "{{ local_evtx }}"
+        dest: /tmp/logontracer/
+        flat: true
+      register: fetch_local
+
+    # noqa: run-once[task]
+    - name: Save fetched paths for next play
+      ansible.builtin.set_fact:
+        fetched_local_path: "{{ fetch_local.dest }}"
+        fetched_forwarded_path: "{{ fetch_forwarded.dest }}"
+      delegate_to: localhost
+      run_once: true
+
+###############################################################
+# PLAY 3 — LINUX LOGONTRACER: Copy EVTX → run import script
+###############################################################
+- name: Copy EVTX to LogonTracer Docker container and import
+  hosts: logontracer
+  gather_facts: false
+
+  tasks:
+    - name: Ensure sudo works without password for this session
+      ansible.builtin.command: "echo '{{ ansible_password }}' | sudo -S true"
+      changed_when: false
+
+    - name: Ensure incoming folder exists on host
+      ansible.builtin.file:
+        path: /opt/logontracer/incoming
+        state: directory
+        mode: '0755'
+
+    - name: Copy AD_Local EVTX to host
+      ansible.builtin.copy:
+        src: "{{ hostvars['ad'].fetched_local_path }}"
+        dest: /opt/logontracer/incoming/ad_local.evtx
+        mode: '0644'
+
+    - name: Copy Forwarded EVTX to host
+      ansible.builtin.copy:
+        src: "{{ hostvars['ad'].fetched_forwarded_path }}"
+        dest: /opt/logontracer/incoming/forwarded.evtx
+        mode: '0644'
+
+##########################################################################
+# LOGONTRACER CONTAINER FIXES (Create missing required directories)
+##########################################################################
+
+    - name: Ensure incoming folder exists inside LogonTracer container
+      ansible.builtin.command: docker exec logontracer mkdir -p /usr/local/src/LogonTracer/incoming
+      become: true
+      changed_when: false
+
+    - name: Ensure logs directory exists inside LogonTracer container
+      ansible.builtin.command: docker exec logontracer mkdir -p /usr/local/src/logs
+      become: true
+      changed_when: false
+
+    - name: Ensure static directory exists inside LogonTracer container
+      ansible.builtin.command: docker exec logontracer mkdir -p /usr/local/src/static
+      become: true
+      changed_when: false
+
+##########################################################################
+
+    - name: Copy EVTX files into LogonTracer container
+      ansible.builtin.shell: |
+        docker cp /opt/logontracer/incoming/ad_local.evtx logontracer:/usr/local/src/LogonTracer/incoming/ad_local.evtx
+        docker cp /opt/logontracer/incoming/forwarded.evtx logontracer:/usr/local/src/LogonTracer/incoming/forwarded.evtx
+      become: true
+      changed_when: true
+
+    - name: Trigger LogonTracer ingestion inside container
+      ansible.builtin.command: >
+        docker exec logontracer python3 /usr/local/src/LogonTracer/logontracer.py
+          -e /usr/local/src/LogonTracer/incoming/ad_local.evtx
+              /usr/local/src/LogonTracer/incoming/forwarded.evtx
+          -z -5
+          -u neo4j
+          -p password
+          -s localhost
+      register: upload_result
+      changed_when: false
+
+    - name: Print ingestion results
+      ansible.builtin.debug:
+        var: upload_result.stdout
