@@ -2,7 +2,7 @@
 Author: Irakli and Ofir\
 Automating LogonTracer with Ansible 
 
-For LogonTracer to be useful, it needs to uploads the security logs of every Windows machine automatically. Since manually uploading and updating logs is unrealistic, this automation handles the entire process end-to-end every 30 minutes using a cron job.
+For LogonTracer to be useful, it needs to regularly ingest the security logs of every Windows machine. Since manually uploading and updating logs regularly is unrealistic, this automation handles the entire process end-to-end every 30 minutes using a cron job.
 
 The goal of this script is to automatically take the logs of every Windows machine gathered on the AD through a log subscription, as well as the logs of the AD itself, move them to the machine running Ansible, then to the Linux machine running LogonTracer. There, the files are moved into the LogonTracer Docker container and uploaded using the built-in LogonTracer script. This is the basic overview.
 
