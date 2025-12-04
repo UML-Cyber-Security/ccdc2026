@@ -23,7 +23,7 @@ A cron job is installed on the Ansible controller that runs the following script
 
 ## 2. Export Logs on AD - extract.yml
 
-This play is executed first. It exports the filtered Security logs that LogonTracer needs.  
+This play is executed first. It exports the filtered Security Logs that LogonTracer needs.  
 Files created:
 
 - `AD_Local_<timestamp>.evtx`
