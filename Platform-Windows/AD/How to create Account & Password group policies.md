@@ -2,7 +2,7 @@
 Authors: Ofir and Irakli\
 How to create Account & Password group policies 
 
-## getting to **Account Policies**
+## Getting to **Account Policies**
 
 1. open **Group Oolicy Management** 
 2. click on the arrow besides **forest: <your forest name>** -> **Domains** -> **<your forest name>.com**
@@ -18,7 +18,7 @@ to follow CIS Benchmark and NIST 800-63B recommendations
 **Minimum password length** = 14 characters
 
 
-## account Lockout Policy
+## Account Lockout Policy
 
 **Account lockout duration** = 15 minutes\
 **Account lockout threshold** = 10 invalid logon attempts\

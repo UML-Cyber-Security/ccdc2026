@@ -49,8 +49,7 @@ sudo docker compose build
 sudo docker compose up -d
 ```
 
-You can now access the logonTracer (might need a port forward at)
-http://<IP_ADRESSS>:8080
+You can now access the logonTracer (might need a port forward) at `http://<IP_ADRESSS>:8080`
 
 you can upload logs to LogonTracer thoough the web UI, or you could move the logs file to the machine where LogonTrace is hosted and run the following python command to upload the logs.
 ```

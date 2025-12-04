@@ -2,7 +2,7 @@
 Authors: Ofir, Irakli, Seamus\
 Setting up split barin DNS with multiple domains
 
-## new domain setup
+## New Domain Setup
 
 The following command creates a new domain, which will be used to create internal DNS entries that only machines from specific IP ranges can access.
 ```powershell
@@ -14,7 +14,7 @@ Run the following command to verify that the previous command was successful.
 Get-DnsServerZone -Name "dev.zodu.com"
 ```
 
-## setting up InternalScope and client subnet
+## Setting up InternalScope and Client Subnet
 
 Run the following command to create a zone inside dev.zodu.com, which will let us configure who can access dev.zodu.com.
 ```powershell
@@ -31,7 +31,7 @@ Also, set up a subnet for external IPs.
 Add-DnsServerClientSubnet -Name "ExternalNetwork" -IPv4Subnet "0.0.0.0/0"
 ```
 
-To create the policy to block external IPS from accessing dev.zodu.com, run the following command.
+To create the policy to block external IPs from accessing dev.zodu.com, run the following command.
 ```powershell
 Add-DnsServerQueryResolutionPolicy -Name "DenyExternalDevZone" ` -Action DENY ` -ClientSubnet "eq,ExternalNetwork" ` -ZoneName "dev.zodu.com"
 ```

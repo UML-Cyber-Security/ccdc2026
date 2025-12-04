@@ -4,20 +4,21 @@ Automating LogonTracer with Ansible
 
 For LogonTracer to be useful, it needs to regularly ingest the security logs of every Windows machine. Since manually uploading and updating logs regularly is unrealistic, this automation handles the entire process end-to-end every 30 minutes using a cron job.
 
-The goal of this script is to automatically take the logs of every Windows machine gathered on the AD through a log subscription, as well as the logs of the AD itself, move them to the machine running Ansible, then to the Linux machine running LogonTracer. There, the files are moved into the LogonTracer Docker container and uploaded using the built-in LogonTracer script. This is the basic overview.
+The goal of this playbook is to automatically collect logs from every Windows machine joined to the same domain where the Active Directory (AD) collects each system's logs through a log subscription. This also collects the logs of the AD itself. When the logs are collected it first copies them onto the machine running the Ansible playbook, then onto the Linux machine running LogonTracer. There, the files are moved into the LogonTracer Docker container and uploaded using the built-in LogonTracer script. This is the basic overview.
 
 # Automation Structure
 
-The automation is broken in to two palybooks as to be able to run the main actions (1.get the needed logs to a folder 2.get them to logontracer) seperatly. They are both triggered by a cron job playbook as follows:
+The automation is broken in to two playbooks as to be able to run the main actions (1.get the needed logs to a folder 2.get them to logontracer) separately. They are both triggered by a cron job playbook as follows:
  
 
 ## 1. Cron Scheduling (Local Machine)
 
-A cron job is installed on the Ansible controller that runs:
+A cron job is installed on the Ansible controller that runs the following script **every 30 minutes**:
 
 `/home/user/ansible/run.sh`
 
-every **30 minutes**, which triggeres the extract file first and the uplaod file second.
+> [!NOTE]
+> This triggers the playbooks to extract the files from the Windows systems, and then uses another playbook to upload and ingest them into LogonTracer.
 
 
 ## 2. Export Logs on AD - extract.yml
@@ -32,7 +33,7 @@ Saved to:
 
 `C:\Logs\Combined`
 
-## 3. Find and Fetch EVTX Logs (Windows AD) - uplaod.yml
+## 3. Find and Fetch EVTX Logs (Windows AD) - upload.yml
 
 ### **Locate Latest Logs**
 
