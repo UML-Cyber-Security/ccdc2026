@@ -1,0 +1,12 @@
+---
+# Playbook: site.yml
+# Purpose: Main entry point - runs full LogonTracer log extraction and ingestion
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.ini site.yml
+#
+# For setup tasks (deploy container, configure cron), use:
+#   ansible-playbook -i inventory/hosts.ini setup/full_setup.yml
+
+- name: LogonTracer Operations
+  ansible.builtin.import_playbook: operations/extract_and_ingest.yml

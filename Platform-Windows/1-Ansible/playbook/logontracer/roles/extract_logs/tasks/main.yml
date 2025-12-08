@@ -1,0 +1,40 @@
+---
+# Role: extract_logs
+# Purpose: Extract EVTX logs from Windows AD for LogonTracer analysis
+
+- name: Ensure combined log folder exists
+  ansible.windows.win_file:
+    path: "{{ windows_logs_combined_path }}"
+    state: directory
+
+- name: Generate timestamp
+  ansible.builtin.set_fact:
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M') | trim }}"
+
+- name: Build event ID query string
+  ansible.builtin.set_fact:
+    event_query: "*[System[({{ logontracer_event_ids | map('regex_replace', '^(.*)$', 'EventID=\\1') | join(' or ') }})]]"
+
+- name: Export AD LOCAL Security log (LogonTracer events only)
+  ansible.windows.win_shell: |
+    $dir = "{{ windows_logs_combined_path }}"
+    $output = Join-Path $dir "AD_Local_{{ timestamp }}.evtx"
+    $query = "{{ event_query }}"
+    wevtutil epl Security $output "/q:$query"
+    Write-Output "Exported local AD log to $output"
+  register: local_evtx
+
+- name: Export FORWARDED EVENTS (LogonTracer events only)
+  ansible.windows.win_shell: |
+    $dir = "{{ windows_logs_combined_path }}"
+    $output = Join-Path $dir "Forwarded_{{ timestamp }}.evtx"
+    $query = "{{ event_query }}"
+    wevtutil epl ForwardedEvents $output "/q:$query"
+    Write-Output "Exported forwarded events to $output"
+  register: forwarded_evtx
+
+- name: Summary
+  ansible.builtin.debug:
+    msg:
+      - "{{ local_evtx.stdout }}"
+      - "{{ forwarded_evtx.stdout }}"

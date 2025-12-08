@@ -1,0 +1,44 @@
+---
+# LogonTracer Configuration Variables
+# These can be overridden per-host or per-group in inventory
+
+# Container settings
+logontracer_container_name: "logontracer"
+logontracer_image: "intrepidityconsulting/logontracer:latest"
+
+# Container ports
+logontracer_web_port: 8080
+neo4j_bolt_port: 7687
+neo4j_http_port: 7474
+
+# Paths on Windows AD
+windows_logs_combined_path: 'C:\Logs\Combined'
+
+# Paths on Ansible controller
+controller_temp_path: "/tmp/logontracer"
+
+# Paths on LogonTracer host
+logontracer_host_incoming_path: "/opt/logontracer/incoming"
+logontracer_host_data_path: "/opt/logontracer/data"
+logontracer_container_base_path: "/usr/local/src/LogonTracer"
+logontracer_container_incoming_path: "{{ logontracer_container_base_path }}/incoming"
+
+# Neo4j settings for LogonTracer
+neo4j_user: "neo4j"
+neo4j_password: "password"
+neo4j_host: "localhost"
+
+# Timezone offset for LogonTracer
+logontracer_timezone_offset: "-5"
+
+# Event IDs to extract (LogonTracer relevant events)
+logontracer_event_ids:
+  - 4624  # Successful logon
+  - 4625  # Failed logon
+  - 4672  # Special privileges assigned
+  - 4768  # Kerberos TGT requested
+  - 4769  # Kerberos service ticket requested
+  - 4776  # NTLM authentication
+
+# Cron schedule (for setup_cron role)
+cron_schedule_minute: "*/30"

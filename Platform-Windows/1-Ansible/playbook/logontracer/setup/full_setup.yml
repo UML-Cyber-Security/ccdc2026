@@ -1,0 +1,16 @@
+---
+# Playbook: setup/full_setup.yml
+# Purpose: Complete one-time setup for LogonTracer automation
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.ini setup/full_setup.yml
+#
+# This playbook runs all setup tasks:
+#   1. Deploy LogonTracer container
+#   2. Configure cron scheduling
+
+- name: Full LogonTracer Setup
+  ansible.builtin.import_playbook: deploy_container.yml
+
+- name: Setup Scheduling
+  ansible.builtin.import_playbook: setup_scheduling.yml

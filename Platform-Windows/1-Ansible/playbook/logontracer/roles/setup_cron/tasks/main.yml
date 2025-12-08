@@ -1,0 +1,9 @@
+---
+# Role: setup_cron
+# Purpose: Configure cron job for automated log extraction and ingestion
+
+- name: Write cron job for LogonTracer automation
+  ansible.builtin.cron:
+    name: "LogonTracer - Extract and Upload logs"
+    minute: "{{ cron_schedule_minute }}"
+    job: "{{ playbook_dir }}/run.sh"

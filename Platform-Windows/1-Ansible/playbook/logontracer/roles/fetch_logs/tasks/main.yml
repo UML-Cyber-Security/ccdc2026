@@ -1,0 +1,57 @@
+---
+# Role: fetch_logs
+# Purpose: Find and fetch EVTX files from Windows AD to Ansible controller
+
+- name: Find AD_Local and Forwarded EVTX files
+  ansible.windows.win_shell: |
+    $folder = '{{ windows_logs_combined_path }}'
+    if (Test-Path $folder) {
+        $local = Get-ChildItem -Path $folder -Filter 'AD_Local_*.evtx' |
+          Sort-Object LastWriteTime -Descending |
+          Select-Object -First 1 -ExpandProperty FullName
+        $fwd = Get-ChildItem -Path $folder -Filter 'Forwarded_*.evtx' |
+          Sort-Object LastWriteTime -Descending |
+          Select-Object -First 1 -ExpandProperty FullName
+        "$local|$fwd"
+    }
+  register: evtx_paths_raw
+  changed_when: false
+
+- name: Fail if no EVTX files found
+  ansible.builtin.fail:
+    msg: "No EVTX files found in {{ windows_logs_combined_path }} on the Windows AD machine."
+  when: evtx_paths_raw.stdout | trim == "|" or evtx_paths_raw.stdout | trim == ""
+
+- name: Save EVTX paths as facts
+  ansible.builtin.set_fact:
+    local_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[0] }}"
+    forwarded_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[1] }}"
+
+- name: Ensure local temp folder exists on controller
+  ansible.builtin.file:
+    path: "{{ controller_temp_path }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+
+- name: Fetch Forwarded EVTX file to controller
+  ansible.builtin.fetch:
+    src: "{{ forwarded_evtx }}"
+    dest: "{{ controller_temp_path }}/"
+    flat: true
+  register: fetch_forwarded
+
+- name: Fetch AD_Local EVTX file to controller
+  ansible.builtin.fetch:
+    src: "{{ local_evtx }}"
+    dest: "{{ controller_temp_path }}/"
+    flat: true
+  register: fetch_local
+
+# noqa: run-once[task]
+- name: Save fetched paths for subsequent plays
+  ansible.builtin.set_fact:
+    fetched_local_path: "{{ fetch_local.dest }}"
+    fetched_forwarded_path: "{{ fetch_forwarded.dest }}"
+  delegate_to: localhost
+  run_once: true

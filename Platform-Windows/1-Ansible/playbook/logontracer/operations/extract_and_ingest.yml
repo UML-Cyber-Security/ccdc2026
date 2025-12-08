@@ -1,0 +1,41 @@
+---
+# Playbook: operations/extract_and_ingest.yml
+# Purpose: Extract EVTX logs from Windows AD and ingest into LogonTracer
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.ini operations/extract_and_ingest.yml
+#
+# This playbook performs the following:
+#   1. Extracts security event logs from Windows AD (LogonTracer-relevant events)
+#   2. Fetches the exported EVTX files to the Ansible controller
+#   3. Uploads and ingests the logs into the LogonTracer container
+#
+# Prerequisites:
+#   - LogonTracer container must be running (use setup/deploy_container.yml first)
+
+# Play 1: Extract logs on Windows AD
+- name: Extract EVTX logs from Windows AD
+  hosts: ad
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - extract_logs
+
+# Play 2: Fetch logs from Windows AD to controller
+- name: Fetch EVTX files to Ansible controller
+  hosts: ad
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - fetch_logs
+
+# Play 3: Upload and ingest into LogonTracer
+- name: Ingest logs into LogonTracer
+  hosts: logontracer
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - ingest_logs

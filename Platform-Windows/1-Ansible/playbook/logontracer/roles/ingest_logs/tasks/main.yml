@@ -1,0 +1,84 @@
+---
+# Role: ingest_logs
+# Purpose: Copy EVTX files to LogonTracer container and trigger ingestion
+
+# Container verification (addresses reviewer feedback)
+- name: Check if LogonTracer container exists and is running
+  ansible.builtin.command: "docker inspect --format '{%raw%}{{.State.Running}}{%endraw%}' {{ logontracer_container_name }}"
+  register: container_check
+  failed_when: false
+  changed_when: false
+  become: true
+
+- name: Fail if LogonTracer container is not running
+  ansible.builtin.fail:
+    msg: |
+      LogonTracer container '{{ logontracer_container_name }}' is not running or does not exist.
+      Please ensure the container is deployed and running before running this playbook.
+      Container check result: {{ container_check.stderr | default(container_check.stdout) }}
+  when: container_check.rc != 0 or container_check.stdout != 'true'
+
+# Prepare host directories
+- name: Ensure incoming folder exists on host
+  ansible.builtin.file:
+    path: "{{ logontracer_host_incoming_path }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+# Copy files from controller to LogonTracer host
+- name: Copy AD_Local EVTX to host
+  ansible.builtin.copy:
+    src: "{{ hostvars['ad'].fetched_local_path }}"
+    dest: "{{ logontracer_host_incoming_path }}/ad_local.evtx"
+    mode: '0644'
+  become: true
+
+- name: Copy Forwarded EVTX to host
+  ansible.builtin.copy:
+    src: "{{ hostvars['ad'].fetched_forwarded_path }}"
+    dest: "{{ logontracer_host_incoming_path }}/forwarded.evtx"
+    mode: '0644'
+  become: true
+
+# Prepare container directories
+- name: Ensure incoming folder exists inside LogonTracer container
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p {{ logontracer_container_incoming_path }}"
+  become: true
+  changed_when: false
+
+- name: Ensure logs directory exists inside LogonTracer container
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p /usr/local/src/logs"
+  become: true
+  changed_when: false
+
+- name: Ensure static directory exists inside LogonTracer container
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p /usr/local/src/static"
+  become: true
+  changed_when: false
+
+# Copy files into container
+- name: Copy EVTX files into LogonTracer container
+  ansible.builtin.shell: |
+    docker cp {{ logontracer_host_incoming_path }}/ad_local.evtx {{ logontracer_container_name }}:{{ logontracer_container_incoming_path }}/ad_local.evtx
+    docker cp {{ logontracer_host_incoming_path }}/forwarded.evtx {{ logontracer_container_name }}:{{ logontracer_container_incoming_path }}/forwarded.evtx
+  become: true
+  changed_when: true
+
+# Trigger LogonTracer ingestion
+- name: Trigger LogonTracer ingestion inside container
+  ansible.builtin.command: >
+    docker exec {{ logontracer_container_name }} python3 {{ logontracer_container_base_path }}/logontracer.py
+      -e {{ logontracer_container_incoming_path }}/ad_local.evtx
+          {{ logontracer_container_incoming_path }}/forwarded.evtx
+      -z {{ logontracer_timezone_offset }}
+      -u {{ neo4j_user }}
+      -p {{ neo4j_password }}
+      -s {{ neo4j_host }}
+  become: true
+  register: upload_result
+  changed_when: false
+
+- name: Print ingestion results
+  ansible.builtin.debug:
+    var: upload_result.stdout
