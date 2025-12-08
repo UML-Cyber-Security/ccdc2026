@@ -2,23 +2,56 @@
 # Role: ingest_logs
 # Purpose: Copy EVTX files to LogonTracer container and trigger ingestion
 
-# Container verification (addresses reviewer feedback)
-- name: Check if LogonTracer container exists and is running
-  ansible.builtin.command: "docker inspect --format '{%raw%}{{.State.Running}}{%endraw%}' {{ logontracer_container_name }}"
-  register: container_check
-  failed_when: false
+#######################################
+# Container Verification
+#######################################
+- name: Check if Neo4j container is running
+  ansible.builtin.command: "docker ps -q -f name={{ neo4j_container_name }} -f status=running"
+  register: neo4j_running
   changed_when: false
   become: true
 
-- name: Fail if LogonTracer container is not running
-  ansible.builtin.fail:
-    msg: |
-      LogonTracer container '{{ logontracer_container_name }}' is not running or does not exist.
-      Please ensure the container is deployed and running before running this playbook.
-      Container check result: {{ container_check.stderr | default(container_check.stdout) }}
-  when: container_check.rc != 0 or container_check.stdout != 'true'
+- name: Check if LogonTracer container is running
+  ansible.builtin.command: "docker ps -q -f name={{ logontracer_container_name }} -f status=running"
+  register: logontracer_running
+  changed_when: false
+  become: true
 
-# Prepare host directories
+- name: Start Neo4j container if not running
+  ansible.builtin.command: "docker start {{ neo4j_container_name }}"
+  become: true
+  when: neo4j_running.stdout == ""
+  register: neo4j_started
+
+- name: Start LogonTracer container if not running
+  ansible.builtin.command: "docker start {{ logontracer_container_name }}"
+  become: true
+  when: logontracer_running.stdout == ""
+  register: logontracer_started
+
+- name: Wait for Neo4j to be ready after start
+  ansible.builtin.pause:
+    seconds: 10
+  when: neo4j_started.changed | default(false)
+
+- name: Wait for LogonTracer to be ready after start
+  ansible.builtin.pause:
+    seconds: 5
+  when: logontracer_started.changed | default(false)
+
+- name: Verify containers are now running
+  ansible.builtin.command: "docker ps -q -f name={{ item }} -f status=running"
+  register: container_verify
+  failed_when: container_verify.stdout == ""
+  changed_when: false
+  become: true
+  loop:
+    - "{{ neo4j_container_name }}"
+    - "{{ logontracer_container_name }}"
+
+#######################################
+# Prepare Host Directories
+#######################################
 - name: Ensure incoming folder exists on host
   ansible.builtin.file:
     path: "{{ logontracer_host_incoming_path }}"
@@ -26,22 +59,45 @@
     mode: '0755'
   become: true
 
-# Copy files from controller to LogonTracer host
-- name: Copy AD_Local EVTX to host
+#######################################
+# Copy Files from Controller to Host
+#######################################
+- name: Get file sizes from controller
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  delegate_to: localhost
+  register: controller_files
+  loop:
+    - "{{ hostvars['ad'].fetched_local_path }}"
+    - "{{ hostvars['ad'].fetched_forwarded_path }}"
+
+- name: "[INGEST] Starting upload to LogonTracer host"
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "UPLOADING TO LOGONTRACER HOST"
+      - "========================================"
+      - "AD Local:   {{ (controller_files.results[0].stat.size / 1048576) | round(2) }} MB"
+      - "Forwarded:  {{ (controller_files.results[1].stat.size / 1048576) | round(2) }} MB"
+      - "========================================"
+
+- name: "[INGEST] Copying AD_Local EVTX to host ({{ (controller_files.results[0].stat.size / 1048576) | round(2) }} MB)..."
   ansible.builtin.copy:
     src: "{{ hostvars['ad'].fetched_local_path }}"
     dest: "{{ logontracer_host_incoming_path }}/ad_local.evtx"
     mode: '0644'
   become: true
 
-- name: Copy Forwarded EVTX to host
+- name: "[INGEST] Copying Forwarded EVTX to host ({{ (controller_files.results[1].stat.size / 1048576) | round(2) }} MB)..."
   ansible.builtin.copy:
     src: "{{ hostvars['ad'].fetched_forwarded_path }}"
     dest: "{{ logontracer_host_incoming_path }}/forwarded.evtx"
     mode: '0644'
   become: true
 
-# Prepare container directories
+#######################################
+# Prepare Container Directories
+#######################################
 - name: Ensure incoming folder exists inside LogonTracer container
   ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p {{ logontracer_container_incoming_path }}"
   become: true
@@ -57,7 +113,9 @@
   become: true
   changed_when: false
 
-# Copy files into container
+#######################################
+# Copy Files into Container
+#######################################
 - name: Copy EVTX files into LogonTracer container
   ansible.builtin.shell: |
     docker cp {{ logontracer_host_incoming_path }}/ad_local.evtx {{ logontracer_container_name }}:{{ logontracer_container_incoming_path }}/ad_local.evtx
@@ -65,7 +123,9 @@
   become: true
   changed_when: true
 
-# Trigger LogonTracer ingestion
+#######################################
+# Trigger LogonTracer Ingestion
+#######################################
 - name: Trigger LogonTracer ingestion inside container
   ansible.builtin.command: >
     docker exec {{ logontracer_container_name }} python3 {{ logontracer_container_base_path }}/logontracer.py
@@ -79,6 +139,14 @@
   register: upload_result
   changed_when: false
 
-- name: Print ingestion results
+- name: "[INGEST] Results"
   ansible.builtin.debug:
-    var: upload_result.stdout
+    msg:
+      - "========================================"
+      - "INGESTION COMPLETE"
+      - "========================================"
+      - "{{ upload_result.stdout }}"
+      - "========================================"
+      - "LogonTracer UI: http://{{ ansible_host }}:{{ logontracer_web_port }}"
+      - "Neo4j Browser:  http://{{ ansible_host }}:{{ neo4j_http_port }}"
+      - "========================================"

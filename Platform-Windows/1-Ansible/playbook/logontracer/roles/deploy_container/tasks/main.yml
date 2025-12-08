@@ -1,9 +1,9 @@
 ---
 # Role: deploy_container
-# Purpose: Deploy LogonTracer Docker container on the target host
+# Purpose: Deploy Neo4j and LogonTracer Docker containers
 #
-# This role ensures Docker is installed and deploys the LogonTracer container.
-# It's idempotent - safe to run multiple times.
+# This role ensures Docker is installed and deploys both containers.
+# It is safe to run multiple times.
 
 # Ensure Docker is installed
 - name: Check if Docker is installed
@@ -21,19 +21,18 @@
         sudo usermod -aG docker {{ ansible_user }}
   when: docker_check.rc != 0
 
-# Check if container already exists
-- name: Check if LogonTracer container exists
-  ansible.builtin.command: "docker inspect {{ logontracer_container_name }}"
-  register: container_exists
+# Create Docker network if it doesn't exist
+- name: Check if Docker network exists
+  ansible.builtin.command: "docker network inspect {{ docker_network_name }}"
+  register: network_exists
   failed_when: false
   changed_when: false
   become: true
 
-# Pull the LogonTracer image
-- name: Pull LogonTracer Docker image
-  ansible.builtin.command: "docker pull {{ logontracer_image }}"
+- name: Create Docker network
+  ansible.builtin.command: "docker network create {{ docker_network_name }}"
   become: true
-  when: container_exists.rc != 0
+  when: network_exists.rc != 0
 
 # Create required directories on host
 - name: Create LogonTracer data directories
@@ -44,39 +43,85 @@
   loop:
     - "{{ logontracer_host_incoming_path }}"
     - "{{ logontracer_host_data_path }}"
+  become: true
 
-# Deploy the container
+#######################################
+# Neo4j Container
+#######################################
+- name: Check if Neo4j container exists
+  ansible.builtin.command: "docker inspect {{ neo4j_container_name }}"
+  register: neo4j_exists
+  failed_when: false
+  changed_when: false
+  become: true
+
+- name: Pull Neo4j Docker image
+  ansible.builtin.command: "docker pull {{ neo4j_image }}"
+  become: true
+  when: neo4j_exists.rc != 0
+
+- name: Deploy Neo4j container
+  ansible.builtin.command: >
+    docker run -d
+    --name {{ neo4j_container_name }}
+    --network {{ docker_network_name }}
+    --restart unless-stopped
+    -p {{ neo4j_http_port }}:7474
+    -p {{ neo4j_bolt_port }}:7687
+    -e NEO4J_AUTH=none
+    {{ neo4j_image }}
+  become: true
+  when: neo4j_exists.rc != 0
+  register: neo4j_created
+
+- name: Wait for Neo4j container to be ready
+  ansible.builtin.command: "docker exec {{ neo4j_container_name }} echo 'ready'"
+  register: neo4j_ready
+  until: neo4j_ready.rc == 0
+  retries: 30
+  delay: 2
+  become: true
+  when: neo4j_created.changed | default(false)
+
+#######################################
+# LogonTracer Container
+#######################################
+- name: Check if LogonTracer container exists
+  ansible.builtin.command: "docker inspect {{ logontracer_container_name }}"
+  register: logontracer_exists
+  failed_when: false
+  changed_when: false
+  become: true
+
 - name: Deploy LogonTracer container
   ansible.builtin.command: >
     docker run -d
     --name {{ logontracer_container_name }}
+    --network {{ docker_network_name }}
     --restart unless-stopped
     -p {{ logontracer_web_port }}:8080
-    -p {{ neo4j_bolt_port }}:7687
-    -p {{ neo4j_http_port }}:7474
-    -e "LTHOSTNAME={{ neo4j_host }}"
-    -v {{ logontracer_host_data_path }}:/var/lib/neo4j/data
     {{ logontracer_image }}
   become: true
-  when: container_exists.rc != 0
-  register: container_created
+  when: logontracer_exists.rc != 0
+  register: logontracer_created
 
 - name: Wait for LogonTracer container to be ready
   ansible.builtin.command: "docker exec {{ logontracer_container_name }} echo 'ready'"
-  register: container_ready
-  until: container_ready.rc == 0
+  register: logontracer_ready
+  until: logontracer_ready.rc == 0
   retries: 30
   delay: 2
   become: true
-  when: container_created.changed | default(false)
+  when: logontracer_created.changed | default(false)
 
-- name: LogonTracer deployment status
+#######################################
+# Status Report
+#######################################
+- name: Deployment status
   ansible.builtin.debug:
-    msg: >
-      {% if container_exists.rc == 0 %}
-      LogonTracer container '{{ logontracer_container_name }}' already exists.
-      {% else %}
-      LogonTracer container '{{ logontracer_container_name }}' deployed successfully.
+    msg: |
+      Neo4j container '{{ neo4j_container_name }}': {{ 'already exists' if neo4j_exists.rc == 0 else 'deployed' }}
+      LogonTracer container '{{ logontracer_container_name }}': {{ 'already exists' if logontracer_exists.rc == 0 else 'deployed' }}
+
       Web UI: http://{{ ansible_host }}:{{ logontracer_web_port }}
       Neo4j Browser: http://{{ ansible_host }}:{{ neo4j_http_port }}
-      {% endif %}

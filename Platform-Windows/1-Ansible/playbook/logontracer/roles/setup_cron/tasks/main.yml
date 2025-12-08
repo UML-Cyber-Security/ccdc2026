@@ -2,8 +2,15 @@
 # Role: setup_cron
 # Purpose: Configure cron job for automated log extraction and ingestion
 
+- name: Ensure log directory exists
+  ansible.builtin.file:
+    path: /var/log/logontracer
+    state: directory
+    mode: '0755'
+  become: true
+
 - name: Write cron job for LogonTracer automation
   ansible.builtin.cron:
     name: "LogonTracer - Extract and Upload logs"
     minute: "{{ cron_schedule_minute }}"
-    job: "{{ playbook_dir }}/run.sh"
+    job: "{{ playbook_dir | dirname }}/run.sh >> /var/log/logontracer/cron.log 2>&1"

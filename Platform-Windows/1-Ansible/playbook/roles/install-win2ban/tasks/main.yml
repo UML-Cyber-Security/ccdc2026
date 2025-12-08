@@ -1,6 +1,6 @@
 ---
 - name: Check elevation level
-  ansible.builtin.win_shell: whoami /groups | findstr "High"
+  ansible.windows.win_shell: whoami /groups | findstr "High"
 
 - name: Install IPBan via one-liner
   ansible.windows.win_powershell:

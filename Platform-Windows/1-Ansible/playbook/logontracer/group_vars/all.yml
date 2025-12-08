@@ -2,9 +2,14 @@
 # LogonTracer Configuration Variables
 # These can be overridden per-host or per-group in inventory
 
-# Container settings
+# Container settings - Dual container setup (separate Neo4j + LogonTracer)
 logontracer_container_name: "logontracer"
-logontracer_image: "intrepidityconsulting/logontracer:latest"
+logontracer_image: "logontracer:latest"
+neo4j_container_name: "neo4j"
+neo4j_image: "neo4j:4.4.45"
+
+# Docker network for container communication
+docker_network_name: "docker-compose_neo4j-network"
 
 # Container ports
 logontracer_web_port: 8080
@@ -24,9 +29,10 @@ logontracer_container_base_path: "/usr/local/src/LogonTracer"
 logontracer_container_incoming_path: "{{ logontracer_container_base_path }}/incoming"
 
 # Neo4j settings for LogonTracer
+# Note: neo4j_host uses container name since they're on the same docker network
 neo4j_user: "neo4j"
 neo4j_password: "password"
-neo4j_host: "localhost"
+neo4j_host: "neo4j"
 
 # Timezone offset for LogonTracer
 logontracer_timezone_offset: "-5"
@@ -42,3 +48,7 @@ logontracer_event_ids:
 
 # Cron schedule (for setup_cron role)
 cron_schedule_minute: "*/30"
+
+# Log extraction time filter (in days)
+# Set to 0 for no time filter (extract all logs)
+log_extraction_days: 0

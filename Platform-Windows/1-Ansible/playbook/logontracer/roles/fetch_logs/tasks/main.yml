@@ -2,17 +2,21 @@
 # Role: fetch_logs
 # Purpose: Find and fetch EVTX files from Windows AD to Ansible controller
 
-- name: Find AD_Local and Forwarded EVTX files
+- name: Find AD_Local and Forwarded EVTX files with sizes
   ansible.windows.win_shell: |
     $folder = '{{ windows_logs_combined_path }}'
     if (Test-Path $folder) {
-        $local = Get-ChildItem -Path $folder -Filter 'AD_Local_*.evtx' |
+        $localFile = Get-ChildItem -Path $folder -Filter 'AD_Local_*.evtx' |
           Sort-Object LastWriteTime -Descending |
-          Select-Object -First 1 -ExpandProperty FullName
-        $fwd = Get-ChildItem -Path $folder -Filter 'Forwarded_*.evtx' |
+          Select-Object -First 1
+        $fwdFile = Get-ChildItem -Path $folder -Filter 'Forwarded_*.evtx' |
           Sort-Object LastWriteTime -Descending |
-          Select-Object -First 1 -ExpandProperty FullName
-        "$local|$fwd"
+          Select-Object -First 1
+        $localPath = if ($localFile) { $localFile.FullName } else { "" }
+        $localSize = if ($localFile) { $localFile.Length } else { 0 }
+        $fwdPath = if ($fwdFile) { $fwdFile.FullName } else { "" }
+        $fwdSize = if ($fwdFile) { $fwdFile.Length } else { 0 }
+        "$localPath|$localSize|$fwdPath|$fwdSize"
     }
   register: evtx_paths_raw
   changed_when: false
@@ -20,12 +24,25 @@
 - name: Fail if no EVTX files found
   ansible.builtin.fail:
     msg: "No EVTX files found in {{ windows_logs_combined_path }} on the Windows AD machine."
-  when: evtx_paths_raw.stdout | trim == "|" or evtx_paths_raw.stdout | trim == ""
+  when: evtx_paths_raw.stdout | trim == "||0" or evtx_paths_raw.stdout | trim == ""
 
-- name: Save EVTX paths as facts
+- name: Save EVTX paths and sizes as facts
   ansible.builtin.set_fact:
     local_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[0] }}"
-    forwarded_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[1] }}"
+    local_evtx_size: "{{ (evtx_paths_raw.stdout | trim).split('|')[1] }}"
+    forwarded_evtx: "{{ (evtx_paths_raw.stdout | trim).split('|')[2] }}"
+    forwarded_evtx_size: "{{ (evtx_paths_raw.stdout | trim).split('|')[3] }}"
+
+- name: "[FETCH] Starting transfer from Windows AD"
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "FETCHING FILES FROM WINDOWS AD"
+      - "========================================"
+      - "AD Local:   {{ (local_evtx_size | int / 1048576) | round(2) }} MB"
+      - "Forwarded:  {{ (forwarded_evtx_size | int / 1048576) | round(2) }} MB"
+      - "Total:      {{ ((local_evtx_size | int + forwarded_evtx_size | int) / 1048576) | round(2) }} MB"
+      - "========================================"
 
 - name: Ensure local temp folder exists on controller
   ansible.builtin.file:
@@ -34,14 +51,14 @@
     mode: '0755'
   delegate_to: localhost
 
-- name: Fetch Forwarded EVTX file to controller
+- name: "[FETCH] Fetching Forwarded EVTX ({{ (forwarded_evtx_size | int / 1048576) | round(2) }} MB)..."
   ansible.builtin.fetch:
     src: "{{ forwarded_evtx }}"
     dest: "{{ controller_temp_path }}/"
     flat: true
   register: fetch_forwarded
 
-- name: Fetch AD_Local EVTX file to controller
+- name: "[FETCH] Fetching AD_Local EVTX ({{ (local_evtx_size | int / 1048576) | round(2) }} MB)..."
   ansible.builtin.fetch:
     src: "{{ local_evtx }}"
     dest: "{{ controller_temp_path }}/"
@@ -55,3 +72,13 @@
     fetched_forwarded_path: "{{ fetch_forwarded.dest }}"
   delegate_to: localhost
   run_once: true
+
+- name: "[FETCH] Transfer complete"
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "FETCH COMPLETE"
+      - "========================================"
+      - "AD Local:   {{ fetch_local.dest }}"
+      - "Forwarded:  {{ fetch_forwarded.dest }}"
+      - "========================================"
