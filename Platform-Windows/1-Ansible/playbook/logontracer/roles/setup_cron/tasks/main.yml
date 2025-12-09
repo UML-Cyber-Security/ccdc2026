@@ -1,16 +1,41 @@
 ---
 # Role: setup_cron
 # Purpose: Configure cron job for automated log extraction and ingestion
+# Runs every 30 minutes (configurable via cron_schedule_minute in group_vars/all.yml)
 
-- name: Ensure log directory exists
+- name: "[CRON] Get absolute path to logontracer directory"
+  ansible.builtin.set_fact:
+    logontracer_base_dir: "{{ playbook_dir | dirname }}"
+
+- name: "[CRON] Ensure run.sh is executable"
   ansible.builtin.file:
-    path: /var/log/logontracer
-    state: directory
+    path: "{{ logontracer_base_dir }}/run.sh"
     mode: '0755'
-  become: true
 
-- name: Write cron job for LogonTracer automation
+- name: "[CRON] Create cron job for LogonTracer automation (every {{ cron_schedule_minute }})"
   ansible.builtin.cron:
     name: "LogonTracer - Extract and Upload logs"
     minute: "{{ cron_schedule_minute }}"
-    job: "{{ playbook_dir | dirname }}/run.sh >> /var/log/logontracer/cron.log 2>&1"
+    hour: "*"
+    day: "*"
+    month: "*"
+    weekday: "*"
+    job: "{{ logontracer_base_dir }}/run.sh"
+  register: cron_result
+
+- name: "[CRON] Job configured"
+  ansible.builtin.debug:
+    msg: |
+      Cron job created:
+        Schedule: {{ cron_schedule_minute }} * * * *
+        Script:   {{ logontracer_base_dir }}/run.sh
+        Log:      {{ logontracer_base_dir }}/cron.log
+
+- name: "[CRON] Verify cron job exists"
+  ansible.builtin.command: crontab -l
+  register: crontab_list
+  changed_when: false
+
+- name: "[CRON] Current crontab"
+  ansible.builtin.debug:
+    msg: "{{ crontab_list.stdout_lines }}"

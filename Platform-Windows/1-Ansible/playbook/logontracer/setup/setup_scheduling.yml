@@ -10,7 +10,7 @@
 
 - name: Setup automated log collection scheduling
   hosts: localhost
-  gather_facts: false
+  gather_facts: true
   vars_files:
     - ../group_vars/all.yml
   roles:

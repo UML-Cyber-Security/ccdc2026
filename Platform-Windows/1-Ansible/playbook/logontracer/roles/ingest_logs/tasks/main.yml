@@ -5,6 +5,27 @@
 #######################################
 # Container Verification
 #######################################
+- name: Check if Neo4j container exists
+  ansible.builtin.command: "docker ps -aq -f name={{ neo4j_container_name }}"
+  register: neo4j_exists
+  changed_when: false
+  become: true
+
+- name: Check if LogonTracer container exists
+  ansible.builtin.command: "docker ps -aq -f name={{ logontracer_container_name }}"
+  register: logontracer_exists
+  changed_when: false
+  become: true
+
+- name: Fail if containers don't exist
+  ansible.builtin.fail:
+    msg: |
+      Containers not found! Please run deploy_container.yml first:
+        ansible-playbook -i inventory/hosts.ini setup/deploy_container.yml
+
+      Missing: {{ 'neo4j ' if neo4j_exists.stdout == '' else '' }}{{ 'logontracer' if logontracer_exists.stdout == '' else '' }}
+  when: neo4j_exists.stdout == "" or logontracer_exists.stdout == ""
+
 - name: Check if Neo4j container is running
   ansible.builtin.command: "docker ps -q -f name={{ neo4j_container_name }} -f status=running"
   register: neo4j_running
@@ -150,3 +171,46 @@
       - "LogonTracer UI: http://{{ ansible_host }}:{{ logontracer_web_port }}"
       - "Neo4j Browser:  http://{{ ansible_host }}:{{ neo4j_http_port }}"
       - "========================================"
+
+#######################################
+# Cleanup - Free disk space after ingestion
+#######################################
+- name: "[CLEANUP] Remove EVTX files from host incoming folder"
+  ansible.builtin.file:
+    path: "{{ logontracer_host_incoming_path }}"
+    state: absent
+  become: true
+
+- name: "[CLEANUP] Recreate incoming folder for future uploads"
+  ansible.builtin.file:
+    path: "{{ logontracer_host_incoming_path }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: "[CLEANUP] Remove EVTX files from container"
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} rm -rf {{ logontracer_container_incoming_path }}/*"
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[CLEANUP] Clear Docker build cache"
+  ansible.builtin.command: docker builder prune -af
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[CLEANUP] Remove dangling Docker images"
+  ansible.builtin.command: docker image prune -f
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[CLEANUP] Get disk usage after cleanup"
+  ansible.builtin.command: df -h /
+  register: disk_usage
+  changed_when: false
+
+- name: "[CLEANUP] Disk space status"
+  ansible.builtin.debug:
+    msg: "{{ disk_usage.stdout_lines }}"

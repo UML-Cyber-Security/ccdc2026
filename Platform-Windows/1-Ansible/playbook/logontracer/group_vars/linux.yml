@@ -1,0 +1,7 @@
+---
+# Linux Group Variables
+# Connection settings for Linux hosts
+
+ansible_become: true
+ansible_become_method: sudo
+ansible_python_interpreter: /usr/bin/python3.12

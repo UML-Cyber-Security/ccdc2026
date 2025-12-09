@@ -2,7 +2,9 @@
 # LogonTracer Configuration Variables
 # These can be overridden per-host or per-group in inventory
 
-# Container settings - Dual container setup (separate Neo4j + LogonTracer)
+#######################################
+# Container Settings
+#######################################
 logontracer_container_name: "logontracer"
 logontracer_image: "logontracer:latest"
 neo4j_container_name: "neo4j"
@@ -16,24 +18,33 @@ logontracer_web_port: 8080
 neo4j_bolt_port: 7687
 neo4j_http_port: 7474
 
-# Paths on Windows AD
+#######################################
+# Paths
+#######################################
+# Windows AD
 windows_logs_combined_path: 'C:\Logs\Combined'
 
-# Paths on Ansible controller
+# Ansible controller
 controller_temp_path: "/tmp/logontracer"
 
-# Paths on LogonTracer host
+# LogonTracer host
+logontracer_install_path: "/opt/LogonTracer"
 logontracer_host_incoming_path: "/opt/logontracer/incoming"
 logontracer_host_data_path: "/opt/logontracer/data"
 logontracer_container_base_path: "/usr/local/src/LogonTracer"
 logontracer_container_incoming_path: "{{ logontracer_container_base_path }}/incoming"
 
-# Neo4j settings for LogonTracer
+#######################################
+# Neo4j Settings
+#######################################
 # Note: neo4j_host uses container name since they're on the same docker network
 neo4j_user: "neo4j"
 neo4j_password: "password"
 neo4j_host: "neo4j"
 
+#######################################
+# LogonTracer Settings
+#######################################
 # Timezone offset for LogonTracer
 logontracer_timezone_offset: "-5"
 
