@@ -1,0 +1,347 @@
+---
+# Role: deploy_container
+# Follows logontracer documentation + cleanup steps
+
+#######################################
+# Pre-flight Cleanup - Ensure disk space before starting
+#######################################
+- name: "[PRE-CLEANUP] Clean apt cache before install"
+  ansible.builtin.shell: apt-get clean
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[PRE-CLEANUP] Remove old apt lists"
+  ansible.builtin.file:
+    path: /var/lib/apt/lists
+    state: absent
+  become: true
+  failed_when: false
+
+- name: "[PRE-CLEANUP] Recreate apt lists directory"
+  ansible.builtin.file:
+    path: /var/lib/apt/lists/partial
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: "[PRE-CLEANUP] Clear tmp files"
+  ansible.builtin.shell: rm -rf /tmp/* /var/tmp/*
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[PRE-CLEANUP] Check if Docker is available for cleanup"
+  ansible.builtin.command: docker --version
+  register: docker_available
+  failed_when: false
+  changed_when: false
+
+- name: "[PRE-CLEANUP] Clear Docker build cache if Docker exists"
+  ansible.builtin.command: docker builder prune -af
+  become: true
+  failed_when: false
+  changed_when: false
+  when: docker_available.rc == 0
+
+- name: "[PRE-CLEANUP] Remove dangling Docker images if Docker exists"
+  ansible.builtin.command: docker image prune -f
+  become: true
+  failed_when: false
+  changed_when: false
+  when: docker_available.rc == 0
+
+- name: "[PRE-CLEANUP] Show available disk space"
+  ansible.builtin.command: df -h /
+  register: pre_disk
+  changed_when: false
+
+- name: "[PRE-CLEANUP] Disk space status"
+  ansible.builtin.debug:
+    msg: "{{ pre_disk.stdout_lines }}"
+
+#######################################
+# Install Docker (Ubuntu/Debian)
+#######################################
+- name: "[DOCKER] Installing prerequisites: ca-certificates, curl, gnupg"
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+  become: true
+  register: docker_prereq_result
+
+- name: "[DOCKER] Prerequisites installed"
+  ansible.builtin.debug:
+    msg: "Installed: ca-certificates, curl, gnupg"
+  when: docker_prereq_result.changed
+
+- name: "[DOCKER] Creating /etc/apt/keyrings directory"
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: "[DOCKER] Adding Docker GPG key"
+  ansible.builtin.shell: |
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+  become: true
+  register: gpg_key_result
+
+- name: "[DOCKER] GPG key added"
+  ansible.builtin.debug:
+    msg: "Docker GPG key added to /etc/apt/keyrings/docker.gpg"
+  when: gpg_key_result.changed
+
+- name: "[DOCKER] Adding Docker repository"
+  ansible.builtin.shell: |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  args:
+    creates: /etc/apt/sources.list.d/docker.list
+  become: true
+  register: docker_repo_result
+
+- name: "[DOCKER] Repository added"
+  ansible.builtin.debug:
+    msg: "Docker repository added to /etc/apt/sources.list.d/docker.list"
+  when: docker_repo_result.changed
+
+- name: "[DOCKER] Installing Docker packages"
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+    state: present
+    update_cache: true
+  become: true
+  register: docker_install_result
+
+- name: "[DOCKER] Packages installed"
+  ansible.builtin.debug:
+    msg: "Installed: docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin"
+  when: docker_install_result.changed
+
+- name: "[DOCKER] Starting and enabling Docker service"
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+  become: true
+
+- name: "[DOCKER] Service running"
+  ansible.builtin.debug:
+    msg: "Docker service started and enabled"
+
+#######################################
+# Install Docker Compose
+#######################################
+- name: "[COMPOSE] Installing docker-compose-plugin"
+  ansible.builtin.apt:
+    name: docker-compose-plugin
+    state: present
+  become: true
+  register: compose_install_result
+
+- name: "[COMPOSE] Plugin installed"
+  ansible.builtin.debug:
+    msg: "Docker Compose plugin installed"
+  when: compose_install_result.changed
+
+#######################################
+# Install Git
+#######################################
+- name: "[GIT] Installing git"
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+  become: true
+  register: git_install_result
+
+- name: "[GIT] Installed"
+  ansible.builtin.debug:
+    msg: "Git installed"
+  when: git_install_result.changed
+
+#######################################
+# Clone LogonTracer Repository
+#######################################
+- name: "[LOGONTRACER] Cloning repository"
+  ansible.builtin.git:
+    repo: https://github.com/JPCERTCC/LogonTracer.git
+    dest: "{{ logontracer_install_path }}"
+    version: master
+  become: true
+  register: clone_result
+
+- name: "[LOGONTRACER] Repository cloned"
+  ansible.builtin.debug:
+    msg: "LogonTracer cloned to {{ logontracer_install_path }}"
+  when: clone_result.changed
+
+#######################################
+# Configure docker-compose.yml
+#######################################
+- name: "[CONFIG] Setting LTHOSTNAME to {{ ansible_host }}"
+  ansible.builtin.lineinfile:
+    path: "{{ logontracer_install_path }}/docker-compose/docker-compose.yml"
+    regexp: '^\s*-\s*LTHOSTNAME='
+    line: "      - LTHOSTNAME={{ ansible_host }}"
+  become: true
+  register: hostname_result
+
+- name: "[CONFIG] LTHOSTNAME configured"
+  ansible.builtin.debug:
+    msg: "LTHOSTNAME set to {{ ansible_host }}"
+  when: hostname_result.changed
+
+#######################################
+# Create Docker Network
+#######################################
+- name: "[NETWORK] Creating neo4j-network"
+  ansible.builtin.command: docker network create neo4j-network
+  become: true
+  register: network_create
+  failed_when: false
+  changed_when: network_create.rc == 0
+
+- name: "[NETWORK] Created"
+  ansible.builtin.debug:
+    msg: "Docker network 'neo4j-network' created"
+  when: network_create.rc == 0
+
+- name: "[NETWORK] Already exists (skipped)"
+  ansible.builtin.debug:
+    msg: "Docker network 'neo4j-network' already exists"
+  when: network_create.rc != 0
+
+#######################################
+# Build and Start Containers
+#######################################
+- name: "[BUILD] Starting container build (this may take 10-15 minutes)..."
+  ansible.builtin.debug:
+    msg: "Building LogonTracer containers - please wait..."
+
+- name: "[BUILD] Running docker compose build"
+  ansible.builtin.command: docker compose build
+  args:
+    chdir: "{{ logontracer_install_path }}/docker-compose"
+  become: true
+  register: build_result
+
+- name: "[BUILD] Complete"
+  ansible.builtin.debug:
+    msg: "LogonTracer containers built successfully"
+
+- name: "[START] Running docker compose up -d"
+  ansible.builtin.command: docker compose up -d
+  args:
+    chdir: "{{ logontracer_install_path }}/docker-compose"
+  become: true
+  register: start_result
+
+- name: "[START] Containers running"
+  ansible.builtin.debug:
+    msg: "LogonTracer containers started"
+
+#######################################
+# Post-Cleanup - Free disk space
+#######################################
+- name: "[POST-CLEANUP] Starting cleanup to free disk space..."
+  ansible.builtin.debug:
+    msg: "Cleaning up to recover disk space..."
+
+- name: "[POST-CLEANUP] Clean apt cache"
+  ansible.builtin.apt:
+    autoclean: true
+  become: true
+
+- name: "[POST-CLEANUP] Remove unused apt packages"
+  ansible.builtin.apt:
+    autoremove: true
+    purge: true
+  become: true
+
+- name: "[POST-CLEANUP] Prune Docker build cache"
+  ansible.builtin.command: docker builder prune -af
+  become: true
+  register: builder_prune
+  failed_when: false
+
+- name: "[POST-CLEANUP] Build cache pruned"
+  ansible.builtin.debug:
+    msg: "Docker build cache cleaned"
+
+- name: "[POST-CLEANUP] Remove dangling Docker images"
+  ansible.builtin.command: docker image prune -f
+  become: true
+  failed_when: false
+
+- name: "[POST-CLEANUP] Dangling images removed"
+  ansible.builtin.debug:
+    msg: "Unused Docker images removed"
+
+- name: "[POST-CLEANUP] Clean apt lists"
+  ansible.builtin.file:
+    path: /var/lib/apt/lists
+    state: absent
+  become: true
+
+- name: "[POST-CLEANUP] Recreate apt lists directory"
+  ansible.builtin.file:
+    path: /var/lib/apt/lists/partial
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: "[POST-CLEANUP] Remove .git directory from LogonTracer"
+  ansible.builtin.file:
+    path: "{{ logontracer_install_path }}/.git"
+    state: absent
+  become: true
+
+- name: "[POST-CLEANUP] Cleanup complete"
+  ansible.builtin.debug:
+    msg: "Disk space recovered"
+
+#######################################
+# Final Status Report
+#######################################
+- name: "[STATUS] Getting disk usage"
+  ansible.builtin.command: df -h /
+  register: disk_usage
+  changed_when: false
+
+- name: "[STATUS] Getting container status"
+  ansible.builtin.command: docker ps --format "table {{'{{'}}.Names{{'}}'}}\t{{'{{'}}.Status{{'}}'}}\t{{'{{'}}.Ports{{'}}'}}"
+  register: container_status
+  changed_when: false
+  become: true
+
+- name: "[DEPLOY] Complete"
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      LOGONTRACER DEPLOYMENT COMPLETE
+      ========================================
+
+      Container Status:
+      {{ container_status.stdout }}
+
+      Disk Usage:
+      {{ disk_usage.stdout }}
+
+      ========================================
+      Access LogonTracer at: http://{{ ansible_host }}:8080
+      Neo4j Browser at:      http://{{ ansible_host }}:7474
+
+      Credentials: neo4j / password
+      ========================================

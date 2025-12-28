@@ -1,0 +1,17 @@
+---
+# Playbook: setup/setup_scheduling.yml
+# Purpose: Configure automated scheduling for log extraction and ingestion
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.ini setup/setup_scheduling.yml
+#
+# This playbook sets up a cron job on the Ansible controller to automatically
+# run the extract_and_ingest playbook at regular intervals.
+
+- name: Setup automated log collection scheduling
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - setup_cron

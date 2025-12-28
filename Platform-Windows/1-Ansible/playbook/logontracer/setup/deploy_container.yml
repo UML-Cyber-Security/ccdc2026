@@ -1,0 +1,23 @@
+---
+# Playbook: setup/deploy_container.yml
+# Purpose: Deploy the LogonTracer Docker container
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.ini setup/deploy_container.yml
+#
+# This playbook:
+#   - Verifies Docker is installed
+#   - Pulls the LogonTracer image
+#   - Creates and starts the container
+#
+# Prerequisites:
+#   - Docker must be installed on the target host
+#   - User must have permissions to run Docker commands
+
+- name: Deploy LogonTracer Container
+  hosts: logontracer
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - deploy_container

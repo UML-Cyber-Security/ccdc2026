@@ -1,0 +1,216 @@
+---
+# Role: ingest_logs
+# Purpose: Copy EVTX files to LogonTracer container and trigger ingestion
+
+#######################################
+# Container Verification
+#######################################
+- name: Check if Neo4j container exists
+  ansible.builtin.command: "docker ps -aq -f name={{ neo4j_container_name }}"
+  register: neo4j_exists
+  changed_when: false
+  become: true
+
+- name: Check if LogonTracer container exists
+  ansible.builtin.command: "docker ps -aq -f name={{ logontracer_container_name }}"
+  register: logontracer_exists
+  changed_when: false
+  become: true
+
+- name: Fail if containers don't exist
+  ansible.builtin.fail:
+    msg: |
+      Containers not found! Please run deploy_container.yml first:
+        ansible-playbook -i inventory/hosts.ini setup/deploy_container.yml
+
+      Missing: {{ 'neo4j ' if neo4j_exists.stdout == '' else '' }}{{ 'logontracer' if logontracer_exists.stdout == '' else '' }}
+  when: neo4j_exists.stdout == "" or logontracer_exists.stdout == ""
+
+- name: Check if Neo4j container is running
+  ansible.builtin.command: "docker ps -q -f name={{ neo4j_container_name }} -f status=running"
+  register: neo4j_running
+  changed_when: false
+  become: true
+
+- name: Check if LogonTracer container is running
+  ansible.builtin.command: "docker ps -q -f name={{ logontracer_container_name }} -f status=running"
+  register: logontracer_running
+  changed_when: false
+  become: true
+
+- name: Start Neo4j container if not running
+  ansible.builtin.command: "docker start {{ neo4j_container_name }}"
+  become: true
+  when: neo4j_running.stdout == ""
+  register: neo4j_started
+
+- name: Start LogonTracer container if not running
+  ansible.builtin.command: "docker start {{ logontracer_container_name }}"
+  become: true
+  when: logontracer_running.stdout == ""
+  register: logontracer_started
+
+- name: Wait for Neo4j to be ready after start
+  ansible.builtin.pause:
+    seconds: 10
+  when: neo4j_started.changed | default(false)
+
+- name: Wait for LogonTracer to be ready after start
+  ansible.builtin.pause:
+    seconds: 5
+  when: logontracer_started.changed | default(false)
+
+- name: Verify containers are now running
+  ansible.builtin.command: "docker ps -q -f name={{ item }} -f status=running"
+  register: container_verify
+  failed_when: container_verify.stdout == ""
+  changed_when: false
+  become: true
+  loop:
+    - "{{ neo4j_container_name }}"
+    - "{{ logontracer_container_name }}"
+
+#######################################
+# Prepare Host Directories
+#######################################
+- name: Ensure incoming folder exists on host
+  ansible.builtin.file:
+    path: "{{ logontracer_host_incoming_path }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+#######################################
+# Copy Files from Controller to Host
+#######################################
+- name: Get file sizes from controller
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  delegate_to: localhost
+  register: controller_files
+  loop:
+    - "{{ hostvars['ad'].fetched_local_path }}"
+    - "{{ hostvars['ad'].fetched_forwarded_path }}"
+
+- name: "[INGEST] Starting upload to LogonTracer host"
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "UPLOADING TO LOGONTRACER HOST"
+      - "========================================"
+      - "AD Local:   {{ (controller_files.results[0].stat.size / 1048576) | round(2) }} MB"
+      - "Forwarded:  {{ (controller_files.results[1].stat.size / 1048576) | round(2) }} MB"
+      - "========================================"
+
+- name: "[INGEST] Copying AD_Local EVTX to host ({{ (controller_files.results[0].stat.size / 1048576) | round(2) }} MB)..."
+  ansible.builtin.copy:
+    src: "{{ hostvars['ad'].fetched_local_path }}"
+    dest: "{{ logontracer_host_incoming_path }}/ad_local.evtx"
+    mode: '0644'
+  become: true
+
+- name: "[INGEST] Copying Forwarded EVTX to host ({{ (controller_files.results[1].stat.size / 1048576) | round(2) }} MB)..."
+  ansible.builtin.copy:
+    src: "{{ hostvars['ad'].fetched_forwarded_path }}"
+    dest: "{{ logontracer_host_incoming_path }}/forwarded.evtx"
+    mode: '0644'
+  become: true
+
+#######################################
+# Prepare Container Directories
+#######################################
+- name: Ensure incoming folder exists inside LogonTracer container
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p {{ logontracer_container_incoming_path }}"
+  become: true
+  changed_when: false
+
+- name: Ensure logs directory exists inside LogonTracer container
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p /usr/local/src/logs"
+  become: true
+  changed_when: false
+
+- name: Ensure static directory exists inside LogonTracer container
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} mkdir -p /usr/local/src/static"
+  become: true
+  changed_when: false
+
+#######################################
+# Copy Files into Container
+#######################################
+- name: Copy EVTX files into LogonTracer container
+  ansible.builtin.shell: |
+    docker cp {{ logontracer_host_incoming_path }}/ad_local.evtx {{ logontracer_container_name }}:{{ logontracer_container_incoming_path }}/ad_local.evtx
+    docker cp {{ logontracer_host_incoming_path }}/forwarded.evtx {{ logontracer_container_name }}:{{ logontracer_container_incoming_path }}/forwarded.evtx
+  become: true
+  changed_when: true
+
+#######################################
+# Trigger LogonTracer Ingestion
+#######################################
+- name: Trigger LogonTracer ingestion inside container
+  ansible.builtin.command: >
+    docker exec {{ logontracer_container_name }} python3 {{ logontracer_container_base_path }}/logontracer.py
+      -e {{ logontracer_container_incoming_path }}/ad_local.evtx
+          {{ logontracer_container_incoming_path }}/forwarded.evtx
+      -z {{ logontracer_timezone_offset }}
+      -u {{ neo4j_user }}
+      -p {{ neo4j_password }}
+      -s {{ neo4j_host }}
+  become: true
+  register: upload_result
+  changed_when: false
+
+- name: "[INGEST] Results"
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "INGESTION COMPLETE"
+      - "========================================"
+      - "{{ upload_result.stdout }}"
+      - "========================================"
+      - "LogonTracer UI: http://{{ ansible_host }}:{{ logontracer_web_port }}"
+      - "Neo4j Browser:  http://{{ ansible_host }}:{{ neo4j_http_port }}"
+      - "========================================"
+
+#######################################
+# Cleanup - Free disk space after ingestion
+#######################################
+- name: "[CLEANUP] Remove EVTX files from host incoming folder"
+  ansible.builtin.file:
+    path: "{{ logontracer_host_incoming_path }}"
+    state: absent
+  become: true
+
+- name: "[CLEANUP] Recreate incoming folder for future uploads"
+  ansible.builtin.file:
+    path: "{{ logontracer_host_incoming_path }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: "[CLEANUP] Remove EVTX files from container"
+  ansible.builtin.command: "docker exec {{ logontracer_container_name }} rm -rf {{ logontracer_container_incoming_path }}/*"
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[CLEANUP] Clear Docker build cache"
+  ansible.builtin.command: docker builder prune -af
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[CLEANUP] Remove dangling Docker images"
+  ansible.builtin.command: docker image prune -f
+  become: true
+  failed_when: false
+  changed_when: false
+
+- name: "[CLEANUP] Get disk usage after cleanup"
+  ansible.builtin.command: df -h /
+  register: disk_usage
+  changed_when: false
+
+- name: "[CLEANUP] Disk space status"
+  ansible.builtin.debug:
+    msg: "{{ disk_usage.stdout_lines }}"

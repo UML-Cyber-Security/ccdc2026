@@ -1,0 +1,71 @@
+---
+# Role: extract_logs
+# Purpose: Extract EVTX logs from Windows AD for LogonTracer analysis
+
+- name: Ensure combined log folder exists
+  ansible.windows.win_file:
+    path: "{{ windows_logs_combined_path }}"
+    state: directory
+
+- name: Generate timestamp
+  ansible.builtin.set_fact:
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M') | trim }}"
+
+- name: Build event ID filter
+  ansible.builtin.set_fact:
+    event_id_filter: "{{ logontracer_event_ids | map('regex_replace', '^(.*)$', 'EventID=\\1') | join(' or ') }}"
+
+- name: Export AD LOCAL Security log (LogonTracer events only)
+  ansible.windows.win_shell: |
+    $dir = "{{ windows_logs_combined_path }}"
+    $output = Join-Path $dir "AD_Local_{{ timestamp }}.evtx"
+    $days = {{ log_extraction_days | default(0) | int }}
+    if ($days -gt 0) {
+        $cutoff = (Get-Date).AddDays(-$days).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        $query = "*[System[({{ event_id_filter }}) and TimeCreated[@SystemTime >= '$cutoff']]]"
+    } else {
+        $query = "*[System[({{ event_id_filter }})]]"
+    }
+    wevtutil epl Security $output "/q:$query"
+    $size = (Get-Item $output).Length
+    $sizeMB = [math]::Round($size / 1MB, 2)
+    Write-Output "$output|$size|$sizeMB"
+  register: local_evtx
+
+- name: Export FORWARDED EVENTS (LogonTracer events only)
+  ansible.windows.win_shell: |
+    $dir = "{{ windows_logs_combined_path }}"
+    $output = Join-Path $dir "Forwarded_{{ timestamp }}.evtx"
+    $days = {{ log_extraction_days | default(0) | int }}
+    if ($days -gt 0) {
+        $cutoff = (Get-Date).AddDays(-$days).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        $query = "*[System[({{ event_id_filter }}) and TimeCreated[@SystemTime >= '$cutoff']]]"
+    } else {
+        $query = "*[System[({{ event_id_filter }})]]"
+    }
+    wevtutil epl ForwardedEvents $output "/q:$query"
+    $size = (Get-Item $output).Length
+    $sizeMB = [math]::Round($size / 1MB, 2)
+    Write-Output "$output|$size|$sizeMB"
+  register: forwarded_evtx
+
+- name: Parse file info
+  ansible.builtin.set_fact:
+    local_evtx_path: "{{ (local_evtx.stdout | trim).split('|')[0] }}"
+    local_evtx_size_bytes: "{{ (local_evtx.stdout | trim).split('|')[1] }}"
+    local_evtx_size_mb: "{{ (local_evtx.stdout | trim).split('|')[2] }}"
+    forwarded_evtx_path: "{{ (forwarded_evtx.stdout | trim).split('|')[0] }}"
+    forwarded_evtx_size_bytes: "{{ (forwarded_evtx.stdout | trim).split('|')[1] }}"
+    forwarded_evtx_size_mb: "{{ (forwarded_evtx.stdout | trim).split('|')[2] }}"
+
+- name: "[EXTRACT] Summary"
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "EXTRACTION COMPLETE"
+      - "========================================"
+      - "Time filter: {{ log_extraction_days | default(0) }} days"
+      - ""
+      - "AD Local:   {{ local_evtx_size_mb }} MB  ({{ local_evtx_path }})"
+      - "Forwarded:  {{ forwarded_evtx_size_mb }} MB  ({{ forwarded_evtx_path }})"
+      - "========================================"
