@@ -1,25 +1,25 @@
-# Proper Linux Sidecar Setup #
+# Proper Linux Sidecar Setup 
 
 WHAT THIS IS:  
 Brief guide tested and confirmed on Linux Debian distros, that correctly sets up a Graylog sidecar "agents" Auditbeat service to pull logs from auditd's audit logs. This allows Graylogs Auditbeat to be ran alongside auditd, which would allow for Graylog and local logging. <br>
 
 
-## 1. Generate a sidecar token from the Graylog dashboard ##
+## 1. Generate a sidecar token from the Graylog dashboard 
 
 Go to -> "System/Inputs" on the top navbar.  
 Click -> "Sidecars".  
 Click -> "Create or reuse a token for the Graylog-sidecar user".  
 Enter a descriptive token name, and a "Token Time to Live". Remember this token, dont lose it!!
 
-## 2. Install the Graylog Sidecar "Agent"  ##
+## 2. Install the Graylog Sidecar "Agent"  
 
-Log into the machine you want the agent on. Run the /Graylog/0-Scripts/Lin-(Sidecar)WIP.sh script. Make sure to enter the correct Graylog server IP and token.  
+Log into the machine you want the agent on. Run the script in /Graylog/0-Scripts/(Linux Sidecar Install script). This install script might change in the future - so make sure you are running the correct one. Make sure to also enter the correct Graylog server IP and token.  
 
 For example: If the Graylog server has the following IP: 192.168.1.182, in the script you should enter: `http://192.168.1.182:9000/api`.
 
-## 3. Add a Graylog Server Input  ##
+## 3. Add a Graylog Server Input  
 
-Back on the Graylog server, go to -> "System/Inputs" on the top navbar.  
+Back on the Graylog web interface, go to -> "System/Inputs" on the top navbar.  
 Click -> "Inputs".  
 Select -> "Beats", "Launch new input"
 Name: "Sidecar beats input"
@@ -29,7 +29,7 @@ Everything else: Keep as default.
 
 Launch the input.
 
-## 4. Configure the Sidecar auditbeat Collector ##
+## 4. Configure the Sidecar auditbeat Collector 
 
 Now, the auditbeat sidecar collector needs to be configured to pull logs from the auditd /var/log/audit.log.
 
@@ -52,7 +52,7 @@ auditbeat.modules:
   resolve_ids: true
 ```
 
-### 4.1 Example full config file ###
+### 4.1 Example full config file 
 
 The full configuration file should now look something like this:
 ```
