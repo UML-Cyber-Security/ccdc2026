@@ -165,6 +165,5 @@ PVC is how applications will request storage after a restart. It is a storage ti
 
 ---
 
-## Conclusion
 
-You now have Prometheus installed and running on your Kubernetes cluster! You can access the web UI, begin monitoring your cluster's health, data and metrics, and connect prometheus to grafana (check other doc). 
+You now have Prometheus installed and running on your cluster. You can access the web UI, begin monitoring your cluster's health, data and metrics, and connect prometheus to grafana (check other doc). 
