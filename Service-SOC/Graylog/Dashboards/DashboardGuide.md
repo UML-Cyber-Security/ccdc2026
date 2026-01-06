@@ -1,12 +1,12 @@
 # Graylog Dashboard Installation
 
 WHAT THIS IS:  
-Very brief guide on how to install/setup the essential Linux logging dashboard - rsyslogs and audtid logs. This is still WIP (Work in progress), as testing the dashboard install with Graylog slightly preconfigured (streams, inputs, pipelines) needs to be tested. <br>
+Very brief guide on how to install/setup the essential Linux logging dashboard - rsyslogs and audtid logs. This is still WIP (Work in progress), as testing the dashboard install with Graylog slightly preconfigured (streams, inputs, pipelines) needs to be tested.  
 
 
 ## 1. Clean the Graylog Web Interface
 
-The only confirmed way this has been tested is with a cleanly installed Graylog system, meaning that the following objects must be default:  
+This has been only tested on a clean system with a fresh install of Graylog, meaning  the following Graylog configuration must be true:  
 - Only default streams
 - Only default pipelines
 - No inputs configured
@@ -14,7 +14,7 @@ The only confirmed way this has been tested is with a cleanly installed Graylog 
 
 ## 2. Install the Logging + Dashboard Content Pack
 
-After everything is brought to a clean "base" state, the content pack `cont2.json` can be loaded in (Should be located in this directory).  
+After everything is brought to a clean "base" state, the content pack `cont2.json` in this directory can be loaded in. If it has not been moved, [this link should take you there.](./cont2.json) 
 
 - Go to the Graylog web Interface  
 - Click "System..." on the top right
