@@ -2,16 +2,16 @@
 
 ## What is Traefik?
 
-Traefik Ingress provider is a kubernetes ingress controller and a modern reverse proxy designed for microservices (and cloud-native applications). It manages access to the clusters services and watches for incoming ingresses events. Traefik, acts as an entry point to route incoming HTTP or HTTPS traffic to the appropriate services based on its set of rules. Traefik automatically discoveres services within the cluster and configures routing without manual intervention, making it easier to expose its services to you. This way you only need to worry about configuration from the services side, not traefiks.
+Traefik Ingress provider is a Kubernetes ingress controller and a modern reverse proxy designed for microservices (and cloud-native applications). It manages access to the cluster's services and watches for incoming ingress events. Traefik acts as an entry point to route incoming HTTP or HTTPS traffic to the appropriate services based on its set of rules. Traefik automatically discovers services within the cluster and configures routing without manual intervention, making it easier to expose its services to you. This way you only need to worry about configuration from the services side, not Traefik's.
 
-Traefik also handles other networking tasks such as load balancing, TLS, host based and path based routing. It monitors the clusters services, pods and resources to update its configuration whenever something is modified. 
+Traefik also handles other networking tasks such as load balancing, TLS, host-based and path-based routing. It monitors the cluster's services, pods and resources to update its configuration whenever something is modified. 
 
 To summarize, its features include but are not limited to:
 
 - Automatic service discovery
-- Built in SSL/TLS certification
+- Built-in SSL/TLS certification
 - Multiple protocol support beyond HTTP(S) such as TCP and UDP
-- web dashboard for monitoring
+- Web dashboard for monitoring
 
 ---
 
@@ -70,7 +70,7 @@ helm install traefik traefik/traefik -n traefik
 
 ### Step 5: Verify Pod Status
 
-Now (after waiting 2 minutes) we will list all the pods running in the namespace "traefik", showing their current status, when it was made, how many times it was restarted, and general information. This allows us to verify that all of the Ingress Controllers components are running as they should and it helps us to troubleshoot if anything arises with the pod. To do this, run:
+Now (after waiting 2 minutes) we will list all the pods running in the namespace "traefik", showing their current status, when it was made, how many times it was restarted, and general information. This allows us to verify that all of the Ingress Controller's components are running as they should and it helps us to troubleshoot if anything arises with the pod. To do this, run:
 ```bash
 kubectl wait pod --for=condition=Ready --all -n traefik --timeout=120s
 ```
@@ -110,33 +110,31 @@ When you run the command for installing something on Helm, it renders the templa
 
 ### What is an Ingress Provider:
 
-An Ingress provider, aka an Ingress Controller, is the software responsible for implementing and managing traffic routing defines within the clusters Ingress resources. The ingress resource is like blueprint for the Ingress provider. Note: Ingress is what lets you map traffic to different backends based on rules you have defined.
+An Ingress provider, aka an Ingress Controller, is the software responsible for implementing and managing traffic routing defined within the cluster's Ingress resources. The ingress resource is like a blueprint for the Ingress provider. Note: Ingress is what lets you map traffic to different backends based on rules you have defined.
 
 ### What is a Reverse Proxy:
 
-A reverse proxy is a server that sits infront of web serbers and foorwards client requests to said web servers. They are implemented to increase security, performance and reliability of the service. When the web page of your service is visited, you arent connected directly to the service server, rather you are connected to the reverse proxy which then will decide where to send your requests to based on the services configurations. The Reverse proxy handles the response from the backend and sends it back to the user of the web page.
+A reverse proxy is a server that sits in front of web servers and forwards client requests to said web servers. They are implemented to increase security, performance and reliability of the service. When the web page of your service is visited, you aren't connected directly to the service server, rather you are connected to the reverse proxy which then will decide where to send your requests to based on the service's configurations. The reverse proxy handles the response from the backend and sends it back to the user of the web page.
 
-Reverse proxies provide benefits such as load balancing across multiple servers, SSL/TLS termination, caching certain content, and very importantly hiding the internal structure of the instrastructure which helds proect services from direct internet exposure. 
+Reverse proxies provide benefits such as load balancing across multiple servers, SSL/TLS termination, caching certain content, and very importantly hiding the internal structure of the infrastructure which helps protect services from direct internet exposure. 
 
 
 ### What is an SSL/TLS Certificate:
 
-An SSL/TLS Certificate is a digital object that allows systems to verify the identity and establish an encrypted network connection to another system using the Secure Socket Layer (SSL) and Transport Security Layer (TLS) protocol. Certificates are used within a cryptographic system known as a public key infrastructure (PKI). PKI provides a way for one party to verify the identity of another party using certificates if both parties trust a third party. This is known as a certificate authority, or CA for short. SSL/TLS certificates essentially act as digital ID carts to secure network communication
+An SSL/TLS Certificate is a digital object that allows systems to verify the identity and establish an encrypted network connection to another system using the Secure Socket Layer (SSL) and Transport Security Layer (TLS) protocol. Certificates are used within a cryptographic system known as a public key infrastructure (PKI). PKI provides a way for one party to verify the identity of another party using certificates if both parties trust a third party. This is known as a certificate authority, or CA for short. SSL/TLS certificates essentially act as digital ID cards to secure network communication
 
 When you connect to a website via HTTPS, the server will send its TLS certificate to the browser with its public key which will be digitally signed by a trusted CA. Your browser verifies the signature, confirms the certificate is valid and uses the public key to establish an encrypted connection.
 
-In kubernetes, Traefik or other Ingress Controllers like Nginx can automatically obtain and renew TLS certificates (when configured with a certificate resolver for an Automatic Certificate Management Environment provider). So when your services like ArgoCD or Grafana can serve encrypted traffic without needing you to manually manage certification and all the troubles that come with it. 
+In Kubernetes, Traefik or other Ingress Controllers like Nginx can automatically obtain and renew TLS certificates (when configured with a certificate resolver for an Automatic Certificate Management Environment provider). So when your services like ArgoCD or Grafana can serve encrypted traffic without needing you to manually manage certification and all the troubles that come with it. 
 
 ### What are Microservices:
 
-Microservices is an architectural approach where you build an application or service as a collection of small independently functioning services rather that one large monolithic service. Each "microservice" focues on one job for the main service without worrying about the others. These services run independently but still communicate with each other and can be worked on, deployed, and scaled separate from one another. 
+Microservices is an architectural approach where you build an application or service as a collection of small independently functioning services rather than one large monolithic service. Each "microservice" focuses on one job for the main service without worrying about the others. These services run independently but still communicate with each other and can be worked on, deployed, and scaled separate from one another. 
 
-For example, in Kubernetes microservices run as seperate deployments within their own pods on the cluster. This way different microservices of the main service can use different lanuages, databases, etc. 
+For example, in Kubernetes microservices run as separate deployments within their own pods on the cluster. This way different microservices of the main service can use different languages, databases, etc. 
 
-While a Microservices architecture does have many benefits, it also has its own downsides. The attack surface is much larger due to how the application is split into many small parts, this requires individual security policies, authentication protocols, and networking. A single misconfiguration can cause issues for the entire cluster. Because of all this extra nexessary security, setting up an application with microservices is much more daunting and complex. 
+While a microservices architecture does have many benefits, it also has its own downsides. The attack surface is much larger due to how the application is split into many small parts, this requires individual security policies, authentication protocols, and networking. A single misconfiguration can cause issues for the entire cluster. Because of all this extra necessary security, setting up an application with microservices is much more daunting and complex. 
 
-**Note: To learn some more about Traefik, there will be a document posted soon about traefik traffic routing configuration with Gitea as the example.**
+**Note: To learn some more about Traefik, there will be a document posted soon about Traefik traffic routing configuration with Gitea as the example.**
 
 ---
-
-
