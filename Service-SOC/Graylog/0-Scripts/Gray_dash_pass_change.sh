@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script should change the dashboard password for Graylog
 
-set -e
+set -euo pipefail  
 
 # Setting variables for config files
 SERVER_CONF="/etc/graylog/server/server.conf"
@@ -45,7 +45,6 @@ fi
 update_or_add "root_password_sha2" "$root_password_sha2" "$DATANODE_CONF"
 
 # Restart services
-systemctl restart graylog-server
-systemctl restart graylog-datanode
+systemctl restart graylog-server graylog-datanode
 
 echo "Graylog credentials updated successfully."
