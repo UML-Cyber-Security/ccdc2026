@@ -28,9 +28,10 @@ How to create a certificate template
         - Keep only **Server Authentication**
 5. **Request handling**:
     - Enable **Allow private key to be exported**
+
     ![alt text](Images/Request-Handling-Server-TLS-Template-Settings.png)
+
 6. **Security**:
-    - Grant **Read** & **Enroll** permissions to Domain Computers
     ![alt text](Images/Security-TLS-Template-Settings.png)
 7. Click **Ok**
 
