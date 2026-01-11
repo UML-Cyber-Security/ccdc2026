@@ -33,7 +33,7 @@ How to create a certificate template
     2. Click **Application policies** -> **Edit**
         - Keep only **Server Authentication**
 5. **Request handling**:
-        - Enable **Allow private key to be exported**
+    - Enable **Allow private key to be exported**
 
     ![alt text](Images/Request-Handling-Server-TLS-Template-Settings.png)
 
