@@ -13,9 +13,9 @@ How to create a certificate template
 2. **Compatibility**:
     - Set **Certification authority** to **Windows Server 2012 R2**
     - Set **Certificate recipient** to **Windows 8 / Windows Server 2012**
+
     ![alt text](Images/Compatibility-Server-TLS-Template-Settings.png)
-3. **Subject Name**:
-    - Select Supply in request
+
 
     ![alt text](Images/Subject-Name-Server-TLS-Template-Settings.png)
 
