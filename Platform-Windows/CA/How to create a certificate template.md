@@ -16,9 +16,10 @@ How to create a certificate template
     ![alt text](Images/Compatibility-Server-TLS-Template-Settings.png)
 3. **Subject Name**:
     - Select Supply in request
+
     ![alt text](Images/Subject-Name-Server-TLS-Template-Settings.png)
+
 4. **Extensions**:
-    1. Click **Key Usage** -> **Edit**
         - Enable **Digital Signature**
         - Enable **Key Encipherment**
         - Disable **Certificate signing**
