@@ -39,7 +39,6 @@ Remove-Item -Path $installerPath
 ```
 
 #### Download NMAP
-(Doesn't fully work rn)
 ```sh
 # Define the URL for the Nmap installer
 $nmapUrl = "https://nmap.org/dist/nmap-7.93-setup.exe"
@@ -57,7 +56,7 @@ Invoke-WebRequest -Uri $nmapUrl -OutFile $installerPath
 #   /NpcapInstallMode=1 -> Install Npcap in WinPcap API-compatible mode
 #   /NpcapInstallMode=0 -> Don't install Npcap (use if you don't need it)
 
-$installArguments = '/S /NpcapInstallMode=1'
+$installArguments = '/forceinstall /NpcapInstallMode=1'
 
 # Run the installer with the silent arguments
 Start-Process -FilePath $installerPath -ArgumentList $installArguments -Wait
