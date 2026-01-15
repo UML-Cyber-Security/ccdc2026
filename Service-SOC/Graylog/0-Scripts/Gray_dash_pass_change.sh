@@ -1,24 +1,50 @@
 #!/bin/bash
 # Script should change the dashboard password for Graylog
 
-read -p "Do you want to generate a new password secret? (generating a password secret will disable all active TOKENS) (y/n): " generate_secret
+set -euo pipefail  
+
+# Setting variables for config files
+SERVER_CONF="/etc/graylog/server/server.conf"
+DATANODE_CONF="/etc/graylog/datanode/datanode.conf"
+
+# Allows user to set a new secret
+read -p "Generate a new password_secret? (DISABLES ALL TOKENS) (y/n): " generate_secret
 
 if [[ "$generate_secret" == "y" ]]; then
-    password_secret=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c${1:-96};echo;)
+    password_secret=$(pwgen -N 1 -s 96)
 fi
 
-echo -n "Enter Password: "
+# Converts password to hashed pass
+echo -n "Enter new Graylog admin password: "
 read -s root_password
 echo
-root_password_sha2=$(echo -n "$root_password" | sha256sum | cut -d" " -f1)
+root_password_sha2=$(echo -n "$root_password" | sha256sum | awk '{print $1}')
 
-# Update the server.conf file
-config_file="/etc/graylog/server/server.conf"
+update_or_add() {
+    local key="$1"
+    local value="$2"
+    local file="$3"
+
+    if grep -q "^${key}[[:space:]]*=" "$file"; then
+        sed -i "s|^${key}[[:space:]]*=.*|${key} = ${value}|" "$file"
+    else
+        echo "${key} = ${value}" >> "$file"
+    fi
+}
+
+# Modified server.conf
 if [[ "$generate_secret" == "y" ]]; then
-    sed -i "s/^password_secret =.*/password_secret = $password_secret/" $config_file
+    update_or_add "password_secret" "$password_secret" "$SERVER_CONF"
 fi
-sed -i "s/^root_password_sha2 =.*/root_password_sha2 = $root_password_sha2/" $config_file
+update_or_add "root_password_sha2" "$root_password_sha2" "$SERVER_CONF"
 
-systemctl restart graylog-server
+# Modified datanode.conf
+if [[ "$generate_secret" == "y" ]]; then
+    update_or_add "password_secret" "$password_secret" "$DATANODE_CONF"
+fi
+update_or_add "root_password_sha2" "$root_password_sha2" "$DATANODE_CONF"
 
-echo "Configuration updated successfully."
+# Restart services
+systemctl restart graylog-server graylog-datanode
+
+echo "Graylog credentials updated successfully."
