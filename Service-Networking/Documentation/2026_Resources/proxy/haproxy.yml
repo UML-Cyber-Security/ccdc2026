@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy-lb
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8404:8404"  # Stats page
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./ssl:/etc/ssl/certs:ro
+    restart: unless-stopped
+    networks:
+      - lb-network
+    sysctls:
+      - net.ipv4.ip_unprivileged_port_start=0
+
+  # Example backend servers
+  app1:
+    image: nginx:alpine
+    container_name: app-backend-1
+    volumes:
+      - ./app1:/usr/share/nginx/html:ro
+    networks:
+      - lb-network
+
+  app2:
+    image: nginx:alpine
+    container_name: app-backend-2
+    volumes:
+      - ./app2:/usr/share/nginx/html:ro
+    networks:
+      - lb-network
+
+  app3:
+    image: nginx:alpine
+    container_name: app-backend-3
+    volumes:
+      - ./app3:/usr/share/nginx/html:ro
+    networks:
+      - lb-network
+
+networks:
+  lb-network:
+    driver: bridge
