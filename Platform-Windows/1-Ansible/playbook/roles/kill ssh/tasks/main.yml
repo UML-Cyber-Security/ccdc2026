@@ -1,5 +1,5 @@
 ---
-
+#THIS SCRIPT IS IN TESTING AND NOT FULLY DONE, SO IT MIGHT BREAK
 - name: Check if OpenSSH Server is installed
   ansible.windows.win_shell: Get-WindowsCapability -Online -Name OpenSSH.Server* | Select-Object -ExpandProperty State
   register: openssh_state
