@@ -1,0 +1,65 @@
+---
+#THIS SCRIPT IS IN TESTING AND NOT FULLY DONE, SO IT MIGHT BREAK
+- name: Check if OpenSSH Server is installed
+  ansible.windows.win_shell: Get-WindowsCapability -Online -Name OpenSSH.Server* | Select-Object -ExpandProperty State
+  register: openssh_state
+  changed_when: false
+
+- name: Print OpenSSH status
+  debug:
+    var: openssh_state.stdout
+
+- name: Stop OpenSSH service
+  ansible.windows.win_service:
+    name: sshd
+    state: stopped
+  ignore_errors: yes
+
+- name: Terminate all active SSH session processes
+  ansible.windows.win_shell: |
+    $sshProcesses = Get-Process sshd -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID }
+    if ($sshProcesses) {
+        $sshProcesses | Stop-Process -Force
+    }
+  ignore_errors: yes
+  register: terminate_output
+
+- name: Uninstall OpenSSH if installed
+  ansible.windows.win_shell: Remove-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+  register: uninstall_result
+  when: "'Installed' in openssh_state.stdout"
+
+- name: Force Delete OpenSSH from Registry
+  ansible.windows.win_shell: |
+    if (Get-Service sshd -ErrorAction SilentlyContinue) {
+        sc.exe delete sshd
+    }
+  when: uninstall_result is succeeded
+
+- name: Block Port 22
+  community.windows.win_firewall_rule:
+    name: Block Inbound SSH 22
+    localport: 22
+    action: block
+    direction: in
+    protocol: tcp
+    profiles:
+      - domain
+      - private
+      - public
+    state: present
+    enabled: yes
+
+- name: Block Port 2222
+  community.windows.win_firewall_rule:
+    name: Block Inbound SSH 2222
+    localport: 2222
+    action: block
+    direction: in
+    protocol: tcp
+    profiles:
+      - domain
+      - private
+      - public
+    state: present
+    enabled: yes
