@@ -1,3 +1,8 @@
+#!/bin/bash
+
+# WHAT THIS SCRIPT DOES:
+# Installs Promtail v2.9.3 as a systemd service to ship logs to Loki on port 9080.
+
 # Download Promtail
 cd /tmp
 wget https://github.com/grafana/loki/releases/download/v2.9.3/promtail-linux-amd64.zip

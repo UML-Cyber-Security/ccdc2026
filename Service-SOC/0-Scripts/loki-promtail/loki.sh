@@ -1,3 +1,8 @@
+#!/bin/bash
+
+# WHAT THIS SCRIPT DOES:
+# Installs Grafana Loki v2.9.3 as a systemd service for log aggregation on port 3100.
+
 # Download and install Loki
 cd /tmp
 wget https://github.com/grafana/loki/releases/download/v2.9.3/loki-linux-amd64.zip
