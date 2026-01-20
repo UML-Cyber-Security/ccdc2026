@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WHAT THIS SCRIPT DOES:
+# WHAT THIS SCRIPT DOES: 
 # Sets up a Linux client with Node Exporter, Promtail, and Falco to send metrics and logs to a SOC server for all linux machines.
 
 # Usage: sudo ./setup-linux-client.sh <hostname> <soc_server_ip>

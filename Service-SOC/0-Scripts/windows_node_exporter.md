@@ -1,7 +1,7 @@
 #### windows ca:
 1. on the windows vm:
 ```
-cd ~/Downdloads
+cd ~/Downdloads 
 
 #install
 	Invoke-WebRequest -Uri "https://github.com/prometheus-community/windows_exporter/releases/download/v0.25.1/windows_exporter-0.25.1-amd64.msi" -OutFile "windows_exporter.msi"

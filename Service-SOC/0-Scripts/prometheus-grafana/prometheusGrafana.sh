@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WHAT THIS SCRIPT DOES:
+# WHAT THIS SCRIPT DOES: 
 
 #prometheus + node exporter + grafana setup script
 #should work for Ubuntu/Debian Linux
