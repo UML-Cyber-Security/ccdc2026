@@ -1,1 +1,1 @@
-powershell_script: ./ps-scripts/Name of script
+powershell_script: Harden-GPO.ps1

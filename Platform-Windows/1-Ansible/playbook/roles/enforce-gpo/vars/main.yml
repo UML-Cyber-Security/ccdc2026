@@ -1,4 +1,0 @@
-vars:
-    gpo_backup_source: "./gpos/my_gpo_backup"          # Local folder containing the GPO backup data
-    gpo_backup_destination: "C:\\Temp\\my_gpo_backup"       # Temporary folder on the DC for staging the backup
-    gpo_name: "My GPO Policy"                              # Name of the GPO to be imported/enforced
