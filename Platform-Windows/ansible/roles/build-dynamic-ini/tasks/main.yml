@@ -1,0 +1,25 @@
+---
+- name: Set all host-role mappings
+  set_fact:
+    role_host_map: >-
+      {{
+        groups | dict2items |
+        selectattr('key', 'in', domain_role_map.values()) |
+        map(attribute='key') |
+        map('extract', groups) |
+        zip(groups.keys() | select('in', domain_role_map.values())) |
+        map('reverse') |
+        list
+      }}
+
+- name: Write inventory to file
+  delegate_to: {{ delegate_target }}
+  copy:
+    dest: "./inventory/domain_inventory.ini"
+    content: |
+      {% for role in domain_role_map.values() %}
+      [{{ role }}]
+      {% for host in groups[role] | default([]) %}
+      {{ host }}
+      {% endfor %}
+      {% endfor %}

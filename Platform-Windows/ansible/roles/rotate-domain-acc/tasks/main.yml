@@ -1,0 +1,24 @@
+- name: Copy custom AD update PowerShell script to target host
+  ansible.windows.win_copy:
+    src: ./ps-scripts/domain_acc_change.ps1
+    dest: C:\Temp\ad_update.ps1
+
+- name: Execute the custom AD update PowerShell script on target host
+  ansible.windows.win_shell: |
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Temp\ad_update.ps1"
+  args:
+    executable: cmd
+  register: ad_script_output
+
+- name: Save script output to CSV file on control node
+  delegate_to: localhost
+  run_once: true
+  ansible.builtin.copy:
+    dest: "./domain_user_passwords.csv"
+    content: "{{ ad_script_output.stdout }}"
+
+- name: Display the script output on control node
+  delegate_to: localhost
+  run_once: true
+  debug:
+    msg: "{{ ad_script_output.stdout }}"

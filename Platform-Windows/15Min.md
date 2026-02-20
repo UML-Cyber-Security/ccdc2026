@@ -228,11 +228,11 @@ $fw.Rules | Where-Object { $_.Name -like "File and Printer Sharing (Echo*" } | F
 Resets GPOs, then hardens domain-wide: audit logging, password policy, SMB signing, disable SMB1, LLMNR, NBT-NS, WPAD, credential protection, and more.
 ```powershell
 # Safe mode (recommended for qualifiers — won't break services)
-powershell -ExecutionPolicy Bypass -File ps-scripts\Harden-GPO.ps1 -S
+powershell -ExecutionPolicy Bypass -File scripts\Harden-GPO.ps1 -S
 ```
 ```powershell
 # Full hardening (more aggressive — can break WinRM by IP, RC4 services)
-powershell -ExecutionPolicy Bypass -File ps-scripts\Harden-GPO.ps1 -SkipReset
+powershell -ExecutionPolicy Bypass -File scripts\Harden-GPO.ps1 -SkipReset
 ```
 
 <details>
@@ -332,7 +332,7 @@ Start-MpScan -ScanType QuickScan
 ### 14. Enable WinRM for Ansible (run on each Windows machine)
 Configures WinRM, creates SSL cert, opens firewall — required before Ansible can connect.
 ```powershell
-powershell -ExecutionPolicy Bypass -File ps-scripts\Enable-WinRM.ps1
+powershell -ExecutionPolicy Bypass -File scripts\Enable-WinRM.ps1
 ```
 
 ### 15. Install Chainsaw
@@ -403,12 +403,13 @@ Get-ChildItem $destinationPath
 
 | Task | Script |
 |------|--------|
-| Kill Malware | `Nat-Win\KillKnownMalwareProceses.ps1` |
-| Dump AD Config (DC only) | `0-Scripts\Dumping\ADDump.md` |
-| Dump DNS Records (DC only) | `0-Scripts\Dumping\DNSDump.md` (**requires DNS server on same machine**) |
-| Hidden Files | `Nat-Win\SearchPotentialMaliciousFiles.ps1` |
-| Recent Events | `Nat-Win\RecentEventLogEntries.ps1` |
-| File Watcher | `Nat-Win\CreateFileWatcher.ps1` |
+| Kill Malware | `scripts\KillKnownMalwareProceses.ps1` |
+| Run All Detection | `scripts\IncidentResponse.ps1` |
+| Dump AD Config (DC only) | See `docs\networking.md` (AD Dump section) |
+| Dump DNS Records (DC only) | See `docs\networking.md` (DNS Dump section) |
+| Hidden Files | `scripts\IncidentResponse.ps1 -Function Find-HiddenExecutables` |
+| Recent Events | `scripts\IncidentResponse.ps1 -Function Get-RecentSecurityEvents` |
+| File Watcher | `scripts\CreateFileWatcher.ps1` |
 | Run Autoruns | `Autoruns64.exe` from Sysinternals folder |
 
 ---
@@ -441,7 +442,7 @@ source ~/.bashrc
 <summary>Configure inventory & run playbook</summary>
 
 ```bash
-cd /path/to/ccdc2026/Platform-Windows/1-Ansible/playbook
+cd /path/to/ccdc2026/Platform-Windows/ansible
 nano inventory/inventory.ini
 ```
 
@@ -493,11 +494,12 @@ ansible-playbook -i inventory/inventory.ini playbook.yml
 <summary>Option A: Simple PowerShell (Recommended for Qualifiers)</summary>
 
 ```powershell
-# Recent security events
-.\Nat-Win\RecentEventLogEntries.ps1
+# Run all detection (recent events, failed logons, hidden files, connections, recent processes)
+.\scripts\IncidentResponse.ps1
 
-# Failed logons (Event 4625)
-.\Nat-Win\SearchEventViewerID.ps1
+# Or run individually:
+.\scripts\IncidentResponse.ps1 -Function Get-RecentSecurityEvents
+.\scripts\IncidentResponse.ps1 -Function Search-FailedLogons
 ```
 </details>
 
@@ -505,7 +507,7 @@ ansible-playbook -i inventory/inventory.ini playbook.yml
 <summary>Option B: LogonTracer (Regionals)</summary>
 
 ```bash
-cd Platform-Windows/1-Ansible/playbook/logontracer
+cd Platform-Windows/ansible/logontracer
 nano inventory/hosts.ini
 ansible-playbook -i inventory/hosts.ini setup/full_setup.yml
 ```
@@ -534,18 +536,18 @@ ansible-playbook -i inventory/hosts.ini setup/full_setup.yml
 
 | Script | Path |
 |--------|------|
-| Kill Malware | `Nat-Win\KillKnownMalwareProceses.ps1` |
-| Export Tasks | `0-Scripts\Dumping\exportScheduled.ps1` |
-| List Connections | `Nat-Win\ListTCPConnections.ps1` |
-| Recent Processes | `Nat-Win\AllProcessesCreatedLast10min.ps1` |
-| Hidden Files | `Nat-Win\SearchPotentialMaliciousFiles.ps1` |
-| Recent Events | `Nat-Win\RecentEventLogEntries.ps1` |
-| Local Pass Rotate | `Nat-Win\LocalPassRotation.ps1` |
-| Domain Pass Rotate | `Nat-Win\RotateDomainPass.ps1` |
-| File Watcher | `Nat-Win\CreateFileWatcher.ps1` |
-| Block IP | `Nat-Win\BlockOutboundIP.ps1` |
-| OU Permissions | `Nat-Win\GetOUPermissions.ps1` (DC only) |
-| Search Event ID | `Nat-Win\SearchEventViewerID.ps1` |
+| Kill Malware | `scripts\KillKnownMalwareProceses.ps1` |
+| Export Tasks | `scripts\exportScheduled.ps1` |
+| Incident Response | `scripts\IncidentResponse.ps1` (runs all detection) |
+| Local Pass Rotate | `scripts\LocalPassRotation.ps1` |
+| Domain Pass Rotate | `scripts\RotateDomainPass.ps1` |
+| File Watcher | `scripts\CreateFileWatcher.ps1` |
+| OU Permissions | `scripts\GetOUPermissions.ps1` (DC only) |
+| Enable RDP | `scripts\enableRDP.ps1` |
+| Harden GPO | `scripts\Harden-GPO.ps1` (DC only) |
+| Enable WinRM | `scripts\Enable-WinRM.ps1` |
+| AD Installer | `scripts\AD_Installer.ps1` |
+| CA Installer | `scripts\CA_Enterprise_Installer.ps1` |
 
 All paths relative to `Platform-Windows\`
 </details>

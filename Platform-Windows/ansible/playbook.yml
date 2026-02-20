@@ -1,0 +1,21 @@
+---
+- name: Run Tasks
+  hosts: all
+  gather_facts: no
+  roles:
+    # - build-dynamic-ini
+    # - check-alive
+    # - create-team-accounts
+    # - enforce-gpo
+    # - find-DC
+    # - enum-win-acc
+    # - Install-chocolatey
+    # - install-win2ban
+     - list-process
+    # - rotate-user-creds
+    # - run-ps-creds
+    # - sysinternal
+
+
+  vars_files:
+    - vars/global_settings.yml

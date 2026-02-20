@@ -1,0 +1,7 @@
+domain_role_map:
+  '0': standalone_workstation
+  '1': member_workstation
+  '2': standalone_server
+  '3': member_server
+  '4': backup_domain_controller
+  '5': primary_domain_controller

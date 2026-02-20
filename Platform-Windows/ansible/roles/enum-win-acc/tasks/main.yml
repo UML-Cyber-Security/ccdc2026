@@ -1,0 +1,31 @@
+---
+- name: Enumerate local user accounts
+  win_shell: |
+    Get-LocalUser | Select-Object Name, Enabled, LastLogon, PasswordLastSet | ConvertTo-Json -Depth 3
+  register: local_users
+
+- name: Combine collected information into a single JSON structure
+  set_fact:
+    report_data: >-
+      {{
+        {
+          "host": inventory_hostname,
+          "local_users": (local_users.stdout | from_json),
+          "local_groups": (local_groups.stdout | from_json),
+          "service_accounts": (service_accounts.stdout | from_json),
+          "computer_info": (computer_info.stdout | from_json)
+        }
+      }}
+
+- name: Ensure local output directory exists
+  delegate_to: localhost
+  file:
+    path: "{{ output_directory }}"
+    state: directory
+
+- name: Write JSON report to local machine (per host)
+  delegate_to: localhost
+  local_action:
+    module: copy
+    dest: "{{ output_directory }}/{{ account_report_filename }}"
+    content: "{{ report_data | to_nice_json }}"

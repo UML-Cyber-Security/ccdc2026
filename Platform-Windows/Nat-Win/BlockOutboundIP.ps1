@@ -1,1 +1,0 @@
-New-NetFirewallRule -DisplayName "Block Evil IP" -Direction Outbound -RemoteAddress "123.456.789.0" -Action Block

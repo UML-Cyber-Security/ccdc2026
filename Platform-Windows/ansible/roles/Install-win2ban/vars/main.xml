@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<configuration>
+  <!-- This override file will update specific appSettings in the base configuration -->
+  <appSettings>
+    {# Update failed login attempts threshold if provided #}
+    {% if ipban_failed_login_attempts is defined %}
+    <add key="FailedLoginAttemptsBeforeBan" value="{{ ipban_failed_login_attempts }}" />
+    {% endif %}
+
+    {# Add IP addresses to whitelist if provided #}
+    {% if ipban_ip_whitelist is defined %}
+    <add key="Whitelist" value="{{ ipban_ip_whitelist }}" />
+    {% endif %}
+
+    {# Add IP addresses to blacklist if provided #}
+    {% if ipban_ip_blacklist is defined %}
+    <add key="Blacklist" value="{{ ipban_ip_blacklist }}" />
+    {% endif %}
+
+    {# Optionally update ban time (e.g. "01:00:00:00") if provided #}
+    {% if ipban_ban_time is defined %}
+    <add key="BanTime" value="{{ ipban_ban_time }}" />
+    {% endif %}
+
+    {# Add additional configurable settings as needed #}
+    {% if ipban_other_setting is defined %}
+    <add key="OtherSettingKey" value="{{ ipban_other_setting }}" />
+    {% endif %}
+  </appSettings>
+</configuration>
