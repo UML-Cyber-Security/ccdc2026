@@ -5,6 +5,8 @@
 # Last Updated: February 20, 2026
 #*************************
 
+# WHAT THIS SCRIPT DOES: This script sets up TLS for the Grafana webpage
+
 # Check if the script is ran as root.
 if [ "$EUID" -ne 0 ] || [ -z "$1" ]; then
   echo "Usage sudo ./$0 <soc_server_ip>"
