@@ -177,7 +177,7 @@ verbose(){
 
     sleep $t
 
-    echo -e "\n-------------\n > History Traces <\n------------- "
+    echo -e "\n-------------\n > Potential (bad) History <\n------------- "
     $s find /home/* -name "docker-compose"
 
     echo -e "Bash history snippet: "
@@ -190,10 +190,15 @@ verbose(){
     $s cat /etc/cron.d/* | grep -Ev '#|PATH|SHELL'
     $s cat /var/spool/cron/crontabs/root 
     echo -e "EXTRA CRONTABS: "
-    $s ls /var/spool/cron/crontabs/
+
+  for file in /var/spool/cron/crontabs/*; do
+    [ -f "$file" ] || continue
+    echo -e "\n----- $file -----"
+    $s cat "$file"
+  done
 
     echo -e "\nSystemctl list-timers: "
-    $s systemctl list-timers
+    $s systemctl list-timers --no-pager
     sleep $t
 
     echo -e "\n---------------\n > Processes <\n--------------- "
@@ -263,13 +268,13 @@ verbose(){
     sleep $t
 
     echo -e "\n------------------\n > Active Running Services <\n------------------ "
-    $s systemctl list-units --type=service --state=running
+    $s systemctl list-units --type=service --state=running --no-pager
     sleep $t
 }
 
 # Get User Input to get sleep time and Type
 timestamp
-echo -ne "Enter Option (Default : Basic)\n1) Basic Mode\n2) Verbose Mode\n\n : "
+echo -ne "Enter Option (Default : Verbose)\n1) Basic Mode\n2) Verbose Mode\n\n : "
 read opt
 echo -n "Pause Time For Each Section (Default 0) : "
 read sec
