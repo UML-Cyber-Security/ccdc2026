@@ -64,3 +64,8 @@ echo "[+] Enabling UFW..."
 ufw --force enable
 
 echo "[!!] UFW configuration complete. Add custom rules if necessary"
+
+# Flush the connection tracking table
+echo "[!!] Flushing connection tracking table..."
+apt install conntrack -y
+conntrack -F
