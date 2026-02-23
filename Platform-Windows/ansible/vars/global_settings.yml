@@ -1,0 +1,3 @@
+write_to_remote: false
+remote_host_var: windows  # or any inventory host/group name
+delegate_target: "{{ write_to_remote | default(false) | ternary(remote_host_var, 'localhost') }}"

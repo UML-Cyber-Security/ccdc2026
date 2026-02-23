@@ -1,0 +1,51 @@
+---
+- name: Get Domain role from WMIObject command
+  ansible.windows.win_shell: |
+    (Get-WMIObject Win32_ComputerSystem).DomainRole
+  register: domain_role_number_raw
+  
+
+- name: Print domain role number
+  debug:
+    var: domain_role_number_raw
+
+- name: Set fact with role number
+  ansible.builtin.set_fact:
+        domain_role_number: "{{ domain_role_number_raw.stdout | trim }}"
+
+
+- name: Set fact with role name
+  ansible.builtin.set_fact:
+    domain_role_name: "{{ domain_role_map[domain_role_number] | default('unknown_role') }}"
+
+- name: Add host to a role-based group
+  add_host:
+    name: "{{ inventory_hostname }}"
+    groups: "{{ domain_role_name }}"
+
+- name: Set all host-role mappings
+  set_fact:
+    role_host_map: >-
+      {{
+        groups | dict2items |
+        selectattr('key', 'in', domain_role_map.values()) |
+        map(attribute='key') |
+        map('extract', groups) |
+        zip(groups.keys() | select('in', domain_role_map.values())) |
+        map('reverse') |
+        list
+      }}
+
+- name: Write inventory to file
+  delegate_to: "{{ delegate_target }}"
+  copy:
+    dest: "./inventory/domain_inventory.ini"
+    content: |
+      {% for role in domain_role_map.values() %}
+      [{{ role }}]
+      {% for host in groups[role] | default([]) %}
+      {{ host }}
+      {% endfor %}
+      {% endfor %}
+  connection: local
+

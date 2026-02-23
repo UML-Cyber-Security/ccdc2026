@@ -1,5 +1,0 @@
----
-- name: Install Chocolatey
-  win_chocolatey:
-    name: chocolatey
-    state: present

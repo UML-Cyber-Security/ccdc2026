@@ -1,3 +1,0 @@
-password_length: 18
-excluded_users: ['Administrator', 'Guest']
-password_records: []
