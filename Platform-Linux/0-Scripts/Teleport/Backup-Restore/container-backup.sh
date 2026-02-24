@@ -38,7 +38,7 @@ echo "[*] Exporting users..."
 podman exec "$CONTAINER" "$TCTL" get users > "$BACKUP_DIR/users.yaml"
 
 if [[ "$EXPORT_SECRETS" == "yes" ]]; then
-    echo "[!] Exporting users WITH secrets (sensitive data)"
+    echo "  [!] Exporting users WITH secrets (sensitive data)"
     podman exec "$CONTAINER" "$TCTL" get users --with-secrets > "$BACKUP_DIR/users_with_secrets.yaml"
     chmod 600 "$BACKUP_DIR/users_with_secrets.yaml"
 fi
