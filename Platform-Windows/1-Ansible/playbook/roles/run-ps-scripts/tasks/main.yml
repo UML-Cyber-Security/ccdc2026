@@ -1,8 +1,0 @@
-- name: copy powershell script to remote machine
-  ansible.windows.win.copy:
-    src: ./ps-scripts/{{ powershell_script }}
-    dest: C:\Temp\
-
-- name: Run powershell script on remote machien
-  ansible.windows.win_shell: |
-    Powershell.exe - Execution Policy Bypass -File "C:\Temp\{{ powershell_script }}"

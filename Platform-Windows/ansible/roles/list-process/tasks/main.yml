@@ -1,0 +1,23 @@
+- name: Retrieve detailed process list from remote host
+  win_shell: |
+    Get-CimInstance Win32_Process | ForEach-Object {
+      # Get the owner information for each process (may be null if not available)
+      $owner = $_.GetOwner();
+      [PSCustomObject]@{
+        ProcessId       = $_.ProcessId;
+        Name            = $_.Name;
+        ParentProcessId = $_.ParentProcessId;
+        StartTime       = try { ([Management.ManagementDateTimeConverter]::ToDateTime($_.CreationDate)) } catch { "N/A" };
+        CommandLine     = $_.CommandLine;
+        User            = if ($owner) { $owner.User } else { "N/A" }
+      }
+    } | ConvertTo-Json -Depth 3
+  args:
+    executable: powershell
+  register: detailed_process_list
+
+- name: Save detailed process list to file on control node
+  delegate_to: localhost
+  ansible.builtin.copy:
+    dest: "./{{ inventory_hostname }}_detailed_processes.json"
+    content: "{{ detailed_process_list.stdout }}"

@@ -1,0 +1,47 @@
+---
+- name: Get local user accounts
+  win_shell: |
+    Get-LocalUser | Where-Object { $_.Enabled -eq $true } | Select-Object -ExpandProperty Name
+  register: local_users_raw
+
+- name: Create list of local users (exclude machine accounts and custom excluded users)
+  set_fact:
+    local_users: >-
+      {{ local_users_raw.stdout_lines
+         | difference(excluded_users | default([]))
+         | reject('match', '.*\$')
+         | list }}
+
+- name: Generate random passwords and store for each user
+  set_fact:
+    user_password_map: "{{ user_password_map | default({}) | combine({ item: lookup('password', '/dev/null length=' ~ password_length) }) }}"
+  loop: "{{ local_users }}"
+
+- name: Change password for each user
+  ansible.windows.win_user:
+    name: "{{ item.key }}"
+    password: "{{ item.value }}"
+  loop: "{{ user_password_map|dict2items }}"
+  ignore_errors: true
+
+- name: Create password CSV content
+  delegate_to: localhost
+  run_once: true
+  set_fact:
+    csv_data: |
+      {% for user, pass in user_password_map.items() %}
+      {{ user }},{{ pass }}
+      {% endfor %}
+
+- name: Write CSV to control node
+  delegate_to: 127.0.0.1
+  run_once: true
+  copy:
+    content: "{{ csv_data }}"
+    dest: "./rotated_passwords.csv"
+
+- name: Show generated CSV data
+  debug:
+    msg: "{{ csv_data }}"
+  run_once: true
+  delegate_to: 127.0.0.1

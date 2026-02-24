@@ -1,1 +1,0 @@
-Get-LocalUser | Where-Object { $_.WhenCreated -gt (Get-Date).AddHours(-1) }

@@ -1,0 +1,21 @@
+---
+  - name: Create the blueteam account
+    microsoft.ad.user:
+      name: "{{ blueteam_username }}"
+      password: "{{ blueteam_password }}"
+      password_never_expires: yes
+      state: present
+  
+  # - name: Add the blueteam account to the Administrators group
+  #   ansible.windows.win_group_membership:
+  #     name: Administrators
+  #     members: "{{ blueteam_username }}"
+  #     state: present
+
+  - name: Add Random account
+    ansible.windows.win_user:
+      name: "{{ random_username }}"
+      password: "{{ blueteam_password }}"
+      update_password: on_create
+      password_never_expires: yes
+      state: present

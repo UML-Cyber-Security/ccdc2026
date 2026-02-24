@@ -1,0 +1,4 @@
+vars:
+  output_directory: "./outputs/reports"
+  account_report_filename: "{{ inventory_hostname }}_account_report.json"
+  ps_depth: 3
