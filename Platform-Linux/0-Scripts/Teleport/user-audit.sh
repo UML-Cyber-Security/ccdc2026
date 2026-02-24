@@ -1,17 +1,23 @@
 #!/bin/bash
 
 # Teleport User Audit / Modification Script
+# No role preview
+# Safe role removal
 # Supports Bare Metal or Podman deployments
-# Run as root
-# No confirmation prompts — actions execute immediately
 
 set -euo pipefail
+
+#######################################
+# Root check
+#######################################
 if [[ "$EUID" -ne 0 ]]; then
     echo "Error: Run this script as root."
     exit 1
 fi
 
-# Run mode selection
+#######################################
+# Mode selection
+#######################################
 echo "Select Teleport deployment type:"
 echo "1) Bare metal"
 echo "2) Podman"
@@ -35,25 +41,24 @@ else
     }
 fi
 
-# Grab users
+#######################################
+# Get users (clean list)
+#######################################
 echo ""
 echo "[*] Retrieving users..."
-USERS=$(run_tctl users ls | awk 'NR>1 {print $1}')
+USERS=$(run_tctl users ls 2>/dev/null | awk 'NR>1 && $1 !~ /^-+$/ {print $1}')
 
 echo ""
 echo "[*] Starting interactive review"
 echo "[!] Actions execute immediately."
 echo ""
 
-
+#######################################
 # Loop through users
+#######################################
 for USER in $USERS; do
     echo "----------------------------------"
     echo "User: $USER"
-
-    # Display current roles
-    echo "Current roles:"
-    run_tctl get user/"$USER" | grep roles || echo "(no roles found)"
 
     echo ""
     echo "Action:"
@@ -65,22 +70,40 @@ for USER in $USERS; do
     case "$ACTION" in
         2)
             echo "[*] Deleting $USER"
-            run_tctl rm user/"$USER"
+            run_tctl rm user/"$USER" || echo "[!] Failed to delete $USER"
             ;;
         3)
             echo "[*] Removing all roles from $USER"
 
-            TMPFILE="/tmp/${USER}_noroles.yaml"
-            run_tctl get user/"$USER" > "$TMPFILE"
+            TMPFILE=$(mktemp /tmp/"${USER}"_noroles.XXXX.yaml)
 
-            # Replace roles with empty list
-            sed -i 's/roles: .*/roles: []/' "$TMPFILE"
+            if ! run_tctl get user/"$USER" > "$TMPFILE" 2>/dev/null; then
+                echo "[!] Failed to retrieve user $USER"
+                rm -f "$TMPFILE"
+                continue
+            fi
+
+            # Safely replace spec.roles block with empty list
+            awk '
+            BEGIN {inroles=0}
+            /^[[:space:]]*roles:/ && inroles==0 {
+                print "  roles: []"
+                inroles=1
+                next
+            }
+            inroles && /^[[:space:]]*-/ { next }
+            { print }
+            ' "$TMPFILE" > "${TMPFILE}.new"
+
+            mv "${TMPFILE}.new" "$TMPFILE"
 
             if [[ "$MODE" == "2" ]]; then
-                podman cp "$TMPFILE" "$CONTAINER:/tmp/${USER}_noroles.yaml"
-                podman exec "$CONTAINER" "$TCTL" create -f "/tmp/${USER}_noroles.yaml"
+                BASENAME=$(basename "$TMPFILE")
+                podman cp "$TMPFILE" "$CONTAINER:/tmp/$BASENAME"
+                podman exec "$CONTAINER" "$TCTL" create -f "/tmp/$BASENAME" \
+                    || echo "[!] Failed to update $USER"
             else
-                run_tctl create -f "$TMPFILE"
+                run_tctl create -f "$TMPFILE" || echo "[!] Failed to update $USER"
             fi
 
             rm -f "$TMPFILE"
