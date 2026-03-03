@@ -220,18 +220,18 @@ Unicode=yes
 signature="`$CHICAGO`$"
 Revision=1
 [Event Audit]
-AuditSystemEvents = 0
+AuditSystemEvents = 3
 AuditLogonEvents = 3
 AuditObjectAccess = 3
 AuditPrivilegeUse = 0
 AuditPolicyChange = 0
 AuditAccountManage = 3
-AuditProcessTracking = 0
+AuditProcessTracking = 3
 AuditDSAccess = 3
 AuditAccountLogon = 3
 "@
     $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
-    Write-Setting "GptTmpl.inf written (5 categories enabled, 4 disabled — Sysmon covers process tracking)"
+    Write-Setting "GptTmpl.inf written (7 categories enabled, 2 disabled)"
 
     # Register Security CSE on the GPO AD object
     $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
@@ -295,13 +295,13 @@ AuditAccountLogon = 3
     $verifyInf = Get-Content "$secEditPath\GptTmpl.inf" -ErrorAction SilentlyContinue
     if ($verifyInf) {
         $expectedAudit = @{
-            AuditSystemEvents    = "0"
+            AuditSystemEvents    = "3"
             AuditLogonEvents     = "3"
             AuditObjectAccess    = "3"
             AuditPrivilegeUse    = "0"
             AuditPolicyChange    = "0"
             AuditAccountManage   = "3"
-            AuditProcessTracking = "0"
+            AuditProcessTracking = "3"
             AuditDSAccess        = "3"
             AuditAccountLogon    = "3"
         }
@@ -708,8 +708,8 @@ if ($runAuditPolicy) {
         "DS Access"          = "Success and Failure"
         "Policy Change"      = "No Auditing"
         "Privilege Use"      = "No Auditing"
-        "System"             = "No Auditing"
-        "Detailed Tracking"  = "No Auditing"
+        "System"             = "Success and Failure"
+        "Detailed Tracking"  = "Success and Failure"
     }
     foreach ($cat in $auditCategories.Keys) {
         $match = $auditOut | Where-Object { $_ -match "^\s+$cat\s+" }
