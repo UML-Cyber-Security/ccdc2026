@@ -34,7 +34,7 @@ Remove-Item -Path $installerPath
 
 ### 3. Install Sysinternals
 <details>
-<summary>Downloads suite to C:\Sysinternals, accepts EULAs</summary>
+<summary><b>Downloads suite to C:\Sysinternals, accepts EULAs</b></summary>
 
 ```powershell
 $url = "https://download.sysinternals.com/files/SysinternalsSuite.zip"
@@ -102,7 +102,7 @@ Write-Host "[+] Sysinternals installed to $dest — Sysmon running, tools launch
 </details>
 
 <details>
-<summary>Manual Sysmon / legacy full Sysinternals install</summary>
+<summary><b>Manual Sysmon / legacy full Sysinternals install</b></summary>
 
 ```powershell
 # Sysmon: check status
@@ -130,7 +130,7 @@ reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f
 
 **Local accounts:**
 <details>
-<summary>List all local users with group memberships</summary>
+<summary><b>List all local users with group memberships</b></summary>
 
 ```powershell
 Get-LocalUser | Select-Object Name, Enabled, LastLogon, @{N='Groups';E={
@@ -143,6 +143,7 @@ Get-LocalUser | Select-Object Name, Enabled, LastLogon, @{N='Groups';E={
 }} | Format-Table -AutoSize
 ```
 </details>
+
 **Disable:**
 ```powershell
 "Guest","Administrator" | ForEach-Object { Disable-LocalUser -Name $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
@@ -154,7 +155,7 @@ Get-LocalUser | Select-Object Name, Enabled, LastLogon, @{N='Groups';E={
 
 **AD accounts (DC only):**
 <details>
-<summary>List all AD users with group memberships</summary>
+<summary><b>List all AD users with group memberships</b></summary>
 
 ```powershell
 Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, Enabled, LastLogonDate, @{N='Groups';E={
@@ -162,6 +163,7 @@ Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, E
 }} | Format-Table -AutoSize
 ```
 </details>
+
 **Disable:**
 ```powershell
 "Guest","krbtgt" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
@@ -170,9 +172,9 @@ Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, E
 ```powershell
 "Guest" | ForEach-Object { Enable-ADAccount -Identity $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
 ```
-**Strip all groups from all users EXCEPT a keep list** (leaves them in Domain Users only — enabled but powerless):
+
 <details>
-<summary>Dry-run preview, then batch strip by group</summary>
+<summary><b>Strip all groups (keep list) — leaves users in Domain Users only</b></summary>
 
 ```powershell
 $keep = @("Administrator","krbtgt")
@@ -215,9 +217,8 @@ Run the above command **twice** back-to-back. May briefly break Kerberos auth.
 > [!WARNING]
 > **Disabling an account does NOT kick active sessions.** You must also logoff/terminate existing sessions.
 
-**Show all active sessions (RDP, SSH, WinRM):**
 <details>
-<summary>Lists RDP, SSH, WinRM sessions with color-coded status</summary>
+<summary><b>Show all active sessions (RDP, SSH, WinRM)</b></summary>
 
 ```powershell
 Write-Host "`n=== RDP Sessions ===" -ForegroundColor Cyan
@@ -261,14 +262,36 @@ qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|
 logoff <SESSION_ID>
 ```
 
-**Kill all SSH sessions:**
+**Disable SSH** (kill sessions, stop, block firewall, prevent startup):
 ```powershell
 Get-Process sshd, ssh -ErrorAction SilentlyContinue | Stop-Process -Force
+Stop-Service sshd -Force -ErrorAction SilentlyContinue
+Set-Service sshd -StartupType Disabled -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Block SSH Inbound" -Direction Inbound -Protocol TCP -LocalPort 22,2222 -Action Block -ErrorAction SilentlyContinue
+Write-Host "[+] SSH killed, disabled, and blocked" -ForegroundColor Green
+```
+**Enable SSH:**
+```powershell
+Remove-NetFirewallRule -DisplayName "Block SSH Inbound" -ErrorAction SilentlyContinue
+Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service sshd -ErrorAction SilentlyContinue
+Write-Host "[+] SSH enabled and started" -ForegroundColor Green
 ```
 
-**Kill all WinRM sessions:**
+**Disable WinRM** (kill sessions, stop, block firewall, prevent startup):
 ```powershell
 Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue | ForEach-Object { Remove-WSManInstance -ResourceURI shell -SelectorSet @{ShellId=$_.ShellId} }
+Stop-Service WinRM -Force -ErrorAction SilentlyContinue
+Set-Service WinRM -StartupType Disabled -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Block WinRM Inbound" -Direction Inbound -Protocol TCP -LocalPort 5985,5986 -Action Block -ErrorAction SilentlyContinue
+Write-Host "[+] WinRM killed, disabled, and blocked" -ForegroundColor Green
+```
+**Enable WinRM:**
+```powershell
+Remove-NetFirewallRule -DisplayName "Block WinRM Inbound" -ErrorAction SilentlyContinue
+Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service WinRM -ErrorAction SilentlyContinue
+Write-Host "[+] WinRM enabled and started" -ForegroundColor Green
 ```
 
 ---
@@ -306,50 +329,17 @@ Remove-Item -Path $installerPath
 
 ### 11. Enable Firewall
 ```powershell
-Set-NetFirewallProfile -All -Enabled True
-Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-Enable-NetFirewallRule -DisplayGroup "File and Printer Sharing"
-New-NetFirewallRule -Name "Allow RDP" -DisplayName "Allow RDP" -Enabled True -Protocol TCP -LocalPort 3389 -Action Allow -Direction Inbound
-```
-
-<details>
-<summary>Full firewall script (with ICMP, admin check, status output)</summary>
-
-```powershell
+# Turn on firewall for all profiles
 Set-NetFirewallProfile -All -Enabled True
 
-$IsAdmin = [bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $IsAdmin) {
-    Write-Host "This script must be run as Administrator. Please re-run the script with elevated privileges."
-    exit
-}
-
-Write-Host "Enabling Remote Desktop Firewall rule..."
+# Allow RDP, File/Printer Sharing, and ICMP ping
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-Write-Host "Enabling File and Printer Sharing Firewall rules..."
 Enable-NetFirewallRule -DisplayGroup "File and Printer Sharing"
+Enable-NetFirewallRule -DisplayName "File and Printer Sharing (Echo Request - ICMPv4-In)"
 
-Write-Host "Enabling ICMP Echo Requests (Ping)..."
-Enable-NetFirewallRule -DisplayGroup "Windows Defender Firewall Remote Management"
-
-Write-Host "Enabling Windows Defender inbound rules..."
-Enable-NetFirewallRule -DisplayGroup "Windows Defender Firewall"
-
-Write-Host "Enabling RDP port (3389) manually..."
-New-NetFirewallRule -Name "Allow RDP" -DisplayName "Allow RDP" -Enabled True -Protocol TCP -LocalPort 3389 -Action Allow -Direction Inbound
-
-Write-Host "Firewall rules have been successfully enabled."
-Get-NetFirewallProfile
+# Verify
+Get-NetFirewallProfile | Format-Table Name, Enabled -AutoSize
 ```
-
-**Enable ICMPv4:**
-```powershell
-$fw = New-Object -ComObject HNetCfg.FwPolicy2
-$fw.Rules | Where-Object { $_.Name -like "File and Printer Sharing (Echo*" } | ForEach-Object { $_.Enabled = $true }
-```
-</details>
 
 ---
 
@@ -368,7 +358,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Harden-GPO.ps1 -SkipReset
 ```
 
 <details>
-<summary>Full Harden-GPO.ps1 script (753 lines)</summary>
+<summary><b>Full Harden-GPO.ps1 script</b></summary>
 
 ```powershell
 <#
@@ -1078,7 +1068,7 @@ if ($script:failures.Count -gt 0) { exit 1 }
 </details>
 
 <details>
-<summary>Manual alternatives (if script fails or for non-DC machines)</summary>
+<summary><b>Manual alternatives (if script fails or for non-DC machines)</b></summary>
 
 #### Remove Bad GPOs (DC only)
 Open `gpmc.msc`, delete suspicious GPOs
@@ -1118,7 +1108,7 @@ gsv RemoteRegistry,TlntSvr,SNMP -ea 0 | spsv -f -pas | Set-Service -st Disabled
 
 ### 13. Enable Windows Defender
 <details>
-<summary>Apply GPO, clean up exclusions, verify Defender is running</summary>
+<summary><b>Apply GPO, clean up exclusions, verify Defender is running</b></summary>
 
 > [!IMPORTANT]
 > `Harden-GPO.ps1` (step 12) handles enabling Defender via GPO. This script pulls that policy, does local cleanup GPO can't do, and confirms everything works.
@@ -1185,7 +1175,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Enable-WinRM.ps1
 
 ### 15. Install Chainsaw
 <details>
-<summary>Download, extract, install to C:\Chainsaw</summary>
+<summary><b>Download, extract, install to C:\Chainsaw</b></summary>
 
 ```powershell
 $url = "https://github.com/WithSecureLabs/chainsaw/releases/latest/download/chainsaw_all_platforms+rules.zip"
@@ -1244,7 +1234,7 @@ Get-ChildItem $destinationPath
 
 ### 16. Chainsaw Triage
 <details>
-<summary>Run from C:\Chainsaw — targeted hunts, not a firehose</summary>
+<summary><b>Run from C:\Chainsaw — targeted hunts, not a firehose</b></summary>
 
 All commands assume `cd C:\Chainsaw`. Set `$from` to competition start time (UTC) to ignore old noise.
 
