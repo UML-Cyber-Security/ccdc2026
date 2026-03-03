@@ -211,7 +211,8 @@ if ($runAuditPolicy) {
         New-Item -Path $secEditPath -ItemType Directory -Force | Out-Null
     }
 
-    # 3 = Success and Failure for all 9 audit categories
+    # 3 = Success and Failure; 0 = No Auditing
+    # Only enable categories that WinStride/Sysmon actually consume
     $gptTmpl = @"
 [Unicode]
 Unicode=yes
@@ -219,18 +220,18 @@ Unicode=yes
 signature="`$CHICAGO`$"
 Revision=1
 [Event Audit]
-AuditSystemEvents = 3
+AuditSystemEvents = 0
 AuditLogonEvents = 3
 AuditObjectAccess = 3
-AuditPrivilegeUse = 3
-AuditPolicyChange = 3
+AuditPrivilegeUse = 0
+AuditPolicyChange = 0
 AuditAccountManage = 3
-AuditProcessTracking = 3
+AuditProcessTracking = 0
 AuditDSAccess = 3
 AuditAccountLogon = 3
 "@
     $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
-    Write-Setting "GptTmpl.inf written (all 9 categories: Success and Failure)"
+    Write-Setting "GptTmpl.inf written (5 categories enabled, 4 disabled — Sysmon covers process tracking)"
 
     # Register Security CSE on the GPO AD object
     $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
@@ -268,19 +269,15 @@ AuditAccountLogon = 3
     Write-Setting "SCENoApplyLegacyAuditPolicy = 0 (legacy audit enabled)"
 
     # Registry-based logging settings (via GPO for domain-wide)
+    # Only PowerShell logging — Sysmon handles process/cmdline tracking
     Write-Setting "Configuring registry-based logging"
 
-    # Command-line process auditing
-    Set-RegValue -GPOName $GPOName `
-        -Key "HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit" `
-        -ValueName "ProcessCreationIncludeCmdLine_Enabled" -Value 1
-
-    # PowerShell Script Block Logging
+    # PowerShell Script Block Logging (Event 4104)
     Set-RegValue -GPOName $GPOName `
         -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" `
         -ValueName "EnableScriptBlockLogging" -Value 1
 
-    # PowerShell Module Logging
+    # PowerShell Module Logging (Event 4103)
     Set-RegValue -GPOName $GPOName `
         -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ModuleLogging" `
         -ValueName "EnableModuleLogging" -Value 1
@@ -288,15 +285,6 @@ AuditAccountLogon = 3
         -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames" `
         -ValueName "*" -Value "*" -Type String | Out-Null
     Write-Setting "  ModuleNames\* = *"
-
-    # PowerShell Transcription
-    Set-RegValue -GPOName $GPOName `
-        -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\Transcription" `
-        -ValueName "EnableTranscripting" -Value 1
-    Set-GPRegistryValue -Name $GPOName `
-        -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\Transcription" `
-        -ValueName "OutputDirectory" -Value "C:\PSTranscripts" -Type String | Out-Null
-    Write-Setting "  Transcription OutputDirectory = C:\PSTranscripts"
 
     # Security log size: 1 GB
     Set-RegValue -GPOName $GPOName `
@@ -306,12 +294,21 @@ AuditAccountLogon = 3
     # Verify audit policy in GptTmpl.inf
     $verifyInf = Get-Content "$secEditPath\GptTmpl.inf" -ErrorAction SilentlyContinue
     if ($verifyInf) {
-        foreach ($cat in @("AuditSystemEvents","AuditLogonEvents","AuditObjectAccess",
-                           "AuditPrivilegeUse","AuditPolicyChange","AuditAccountManage",
-                           "AuditProcessTracking","AuditDSAccess","AuditAccountLogon")) {
+        $expectedAudit = @{
+            AuditSystemEvents    = "0"
+            AuditLogonEvents     = "3"
+            AuditObjectAccess    = "3"
+            AuditPrivilegeUse    = "0"
+            AuditPolicyChange    = "0"
+            AuditAccountManage   = "3"
+            AuditProcessTracking = "0"
+            AuditDSAccess        = "3"
+            AuditAccountLogon    = "3"
+        }
+        foreach ($cat in $expectedAudit.Keys) {
             $match = $verifyInf | Where-Object { $_ -match "^\s*$cat\s*=" }
             if ($match -and $match -match "=\s*(\d+)") { $val = $Matches[1] } else { $val = "MISSING" }
-            Test-Result "Audit $cat" "3" $val
+            Test-Result "Audit $cat" $expectedAudit[$cat] $val
         }
     } else {
         Write-Fail "FAIL: Could not read back GptTmpl.inf for audit verification"
@@ -707,12 +704,12 @@ if ($runAuditPolicy) {
         "Logon/Logoff"       = "Success and Failure"
         "Account Logon"      = "Success and Failure"
         "Account Management" = "Success and Failure"
-        "Policy Change"      = "Success and Failure"
-        "Privilege Use"      = "Success and Failure"
         "Object Access"      = "Success and Failure"
-        "System"             = "Success and Failure"
         "DS Access"          = "Success and Failure"
-        "Detailed Tracking"  = "Success and Failure"
+        "Policy Change"      = "No Auditing"
+        "Privilege Use"      = "No Auditing"
+        "System"             = "No Auditing"
+        "Detailed Tracking"  = "No Auditing"
     }
     foreach ($cat in $auditCategories.Keys) {
         $match = $auditOut | Where-Object { $_ -match "^\s+$cat\s+" }

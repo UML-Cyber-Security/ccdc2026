@@ -400,6 +400,75 @@ Get-ChildItem $destinationPath
 ```
 </details>
 
+### 16. Chainsaw Triage
+<details>
+<summary>Run from C:\Chainsaw — targeted hunts, not a firehose</summary>
+
+All commands assume `cd C:\Chainsaw`. Set `$from` to competition start time (UTC) to ignore old noise.
+
+```powershell
+cd C:\Chainsaw
+$logs = "C:\Windows\System32\winevt\Logs"
+$from = "2026-03-14T09:00:00"  # ← SET TO COMPETITION START (UTC)
+```
+
+#### A. Critical + High hits only (run this first)
+Shows only high-confidence detections. Start here.
+```powershell
+.\chainsaw.exe hunt $logs -s rules/ --mapping mappings/sigma-event-logs-all.yml `
+    --level high --from $from --full -q
+```
+
+#### B. Lateral movement
+PsExec, WMI, DCOM, remote services, pass-the-hash.
+```powershell
+.\chainsaw.exe hunt $logs -r rules/evtx/lateral_movement/ `
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+```
+
+#### C. Persistence
+Scheduled tasks, malicious services, registry run keys.
+```powershell
+.\chainsaw.exe hunt $logs -r rules/evtx/persistence/ `
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+```
+
+#### D. Credential access
+LSASS dumps, credential theft, Kerberoasting.
+```powershell
+.\chainsaw.exe hunt $logs -r rules/evtx/credential_access/ `
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+```
+
+#### E. Log tampering / defense evasion
+Event log clearing, Defender disabled, audit policy changed.
+```powershell
+.\chainsaw.exe hunt $logs -r rules/evtx/log_tampering/ -r rules/evtx/defense_evasion/ `
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+```
+
+#### F. Suspicious PowerShell
+Encoded commands, obfuscation, known tool invocations.
+```powershell
+.\chainsaw.exe hunt $logs -r rules/evtx/powershell/ `
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+```
+
+#### G. Search for a specific IOC
+Replace the search term with whatever you're looking for.
+```powershell
+# Known tool name
+.\chainsaw.exe search mimikatz $logs -i --from $from -q
+
+# Suspicious username
+.\chainsaw.exe search -t "Event.EventData.TargetUserName: =svc_backup" "$logs\Security.evtx" --from $from -q
+
+# IP address
+.\chainsaw.exe search -e "10\.0\.0\.200" $logs --from $from -q
+```
+
+</details>
+
 ---
 
 ## Step 2: Threat Detection
