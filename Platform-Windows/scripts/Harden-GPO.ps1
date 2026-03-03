@@ -51,7 +51,20 @@ $ErrorActionPreference = "Stop"
 
 function Write-Banner { param([string]$Text); Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 function Write-Setting { param([string]$Text); Write-Host "  [+] $Text" -ForegroundColor Green }
-function Write-Warn { param([string]$Text); Write-Host "  [!] $Text" -ForegroundColor Yellow }
+function Write-Warn    { param([string]$Text); Write-Host "  [!] $Text" -ForegroundColor Yellow }
+function Write-Verify  { param([string]$Text); Write-Host "  [?] $Text" -ForegroundColor Magenta }
+function Write-Fail    { param([string]$Text); Write-Host "  [X] $Text" -ForegroundColor Red; $script:failures += $Text }
+
+$script:failures = @()
+
+function Test-Result {
+    param([string]$Label, $Expected, $Actual)
+    if ("$Actual" -eq "$Expected") {
+        Write-Verify "PASS: $Label (expected=$Expected)"
+    } else {
+        Write-Fail "FAIL: $Label (expected=$Expected, got=$Actual)"
+    }
+}
 
 function Set-RegValue {
     param(
@@ -63,6 +76,12 @@ function Set-RegValue {
     )
     Set-GPRegistryValue -Name $GPOName -Key $Key -ValueName $ValueName -Value $Value -Type $Type | Out-Null
     Write-Setting "$Key\$ValueName = $Value"
+    try {
+        $readBack = (Get-GPRegistryValue -Name $GPOName -Key $Key -ValueName $ValueName -ErrorAction Stop).Value
+        Test-Result "$Key\$ValueName" $Value $readBack
+    } catch {
+        Write-Fail "FAIL: Could not read back $Key\$ValueName"
+    }
 }
 
 # ── Preflight ────────────────────────────────────────────────────────────────
@@ -139,9 +158,11 @@ if ($runReset) {
     Write-Banner "GPO Reset (dcgpofix)"
     Write-Warn "Resetting Default Domain Policy and Default Domain Controllers Policy"
     "Y","Y" | dcgpofix /target:both 2>&1 | ForEach-Object { Write-Host "    $_" }
+    $dcgpofixExit = $LASTEXITCODE
     & gpupdate /force 2>&1 | Out-Null
     $summary += "GPO Reset"
     Write-Setting "GPO reset complete"
+    Test-Result "dcgpofix exit code" 0 $dcgpofixExit
 }
 
 # ── Create / Get hardening GPO ───────────────────────────────────────────────
@@ -167,6 +188,13 @@ if ($needGPO) {
             Write-Setting "GPO already linked to $DomainDN"
         } else { throw }
     }
+
+    # Verify GPO exists and is linked
+    $verifyGpo = Get-GPO -Name $GPOName -ErrorAction SilentlyContinue
+    Test-Result "GPO '$GPOName' exists" $true ($null -ne $verifyGpo)
+    $inheritance = Get-GPInheritance -Target $DomainDN
+    $linked = $inheritance.GpoLinks | Where-Object { $_.DisplayName -eq $GPOName }
+    Test-Result "GPO '$GPOName' linked to domain" $true ($null -ne $linked)
 }
 
 # ── Audit Policy ─────────────────────────────────────────────────────────────
@@ -275,6 +303,20 @@ AuditAccountLogon = 3
         -Key "HKLM\Software\Policies\Microsoft\Windows\EventLog\Security" `
         -ValueName "MaxSize" -Value 1048576
 
+    # Verify audit policy in GptTmpl.inf
+    $verifyInf = Get-Content "$secEditPath\GptTmpl.inf" -ErrorAction SilentlyContinue
+    if ($verifyInf) {
+        foreach ($cat in @("AuditSystemEvents","AuditLogonEvents","AuditObjectAccess",
+                           "AuditPrivilegeUse","AuditPolicyChange","AuditAccountManage",
+                           "AuditProcessTracking","AuditDSAccess","AuditAccountLogon")) {
+            $match = $verifyInf | Where-Object { $_ -match "^\s*$cat\s*=" }
+            if ($match -and $match -match "=\s*(\d+)") { $val = $Matches[1] } else { $val = "MISSING" }
+            Test-Result "Audit $cat" "3" $val
+        }
+    } else {
+        Write-Fail "FAIL: Could not read back GptTmpl.inf for audit verification"
+    }
+
     $summary += "Audit Policy"
 }
 
@@ -283,22 +325,121 @@ AuditAccountLogon = 3
 if ($runPasswordPolicy) {
     Write-Banner "Password & Lockout Policy"
 
+    # Write password/lockout policy into the Default Domain Policy's GptTmpl.inf
+    # This is where GP clients actually read password policy from
+    $ddpGpo = Get-GPO -Name "Default Domain Policy" -ErrorAction Stop
+    $ddpId = "{$($ddpGpo.Id.ToString().ToUpper())}"
+    $ddpSecEditPath = "\\$Domain\SYSVOL\$Domain\Policies\$ddpId\Machine\Microsoft\Windows NT\SecEdit"
+
+    if (-not (Test-Path $ddpSecEditPath)) {
+        New-Item -Path $ddpSecEditPath -ItemType Directory -Force | Out-Null
+    }
+
+    $ddpInfPath = "$ddpSecEditPath\GptTmpl.inf"
+
+    # Password/lockout values to set
+    $pwdSettings = [ordered]@{
+        MinimumPasswordLength = 16
+        PasswordHistorySize   = 24
+        MinimumPasswordAge    = 0
+        MaximumPasswordAge    = -1
+        PasswordComplexity    = 1
+        ClearTextPassword     = 0
+        LockoutBadCount       = 10
+        ResetLockoutCount     = 15
+        LockoutDuration       = 15
+    }
+
+    # Read existing GptTmpl.inf (dcgpofix may have just recreated it)
+    if (Test-Path $ddpInfPath) {
+        $infContent = Get-Content $ddpInfPath -Raw
+    } else {
+        $infContent = @"
+[Unicode]
+Unicode=yes
+[Version]
+signature="`$CHICAGO`$"
+Revision=1
+"@
+    }
+
+    # Ensure [System Access] section exists
+    if ($infContent -notmatch '\[System Access\]') {
+        $infContent += "`r`n[System Access]`r`n"
+    }
+
+    # Update or insert each setting in [System Access]
+    foreach ($key in $pwdSettings.Keys) {
+        $val = $pwdSettings[$key]
+        if ($infContent -match "(?m)^\s*$key\s*=") {
+            $infContent = $infContent -replace "(?m)^\s*$key\s*=\s*.*$", "$key = $val"
+        } else {
+            $infContent = $infContent -replace "(\[System Access\])", "`$1`r`n$key = $val"
+        }
+    }
+
+    $infContent | Out-File -FilePath $ddpInfPath -Encoding Unicode -Force
+    foreach ($key in $pwdSettings.Keys) {
+        Write-Setting "$key = $($pwdSettings[$key])"
+    }
+
+    # Register Security CSE on the Default Domain Policy AD object
+    $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+    $ddpDN = "CN=$ddpId,CN=Policies,CN=System,$DomainDN"
+    $ddpAD = Get-ADObject -Identity $ddpDN -Properties gPCMachineExtensionNames
+    $currentCSE = $ddpAD.gPCMachineExtensionNames
+    if (-not $currentCSE) { $currentCSE = "" }
+    if ($currentCSE -notmatch [regex]::Escape($securityCSE)) {
+        $currentCSE += $securityCSE
+        Set-ADObject -Identity $ddpDN -Replace @{gPCMachineExtensionNames = $currentCSE}
+        Write-Setting "Security CSE registered on Default Domain Policy"
+    } else {
+        Write-Setting "Security CSE already present on Default Domain Policy"
+    }
+
+    # Bump GPO version so clients pick up the change
+    $ddpAD = Get-ADObject -Identity $ddpDN -Properties versionNumber
+    $ddpNewVer = [int]$ddpAD.versionNumber + 65536
+    Set-ADObject -Identity $ddpDN -Replace @{versionNumber = $ddpNewVer}
+    $ddpGptIniPath = "\\$Domain\SYSVOL\$Domain\Policies\$ddpId\GPT.INI"
+    $ddpGptIniContent = Get-Content $ddpGptIniPath -Raw -ErrorAction SilentlyContinue
+    if ($ddpGptIniContent) {
+        $ddpGptIniContent = $ddpGptIniContent -replace "Version=\d+", "Version=$ddpNewVer"
+        $ddpGptIniContent | Out-File -FilePath $ddpGptIniPath -Encoding ASCII -Force
+    }
+    Write-Setting "Default Domain Policy version bumped to $ddpNewVer"
+
+    # Belt-and-suspenders: also set via AD cmdlet
     Set-ADDefaultDomainPasswordPolicy -Identity $Domain `
         -MinPasswordLength 16 `
         -PasswordHistoryCount 24 `
         -MinPasswordAge ([TimeSpan]::Zero) `
+        -MaxPasswordAge ([TimeSpan]::Zero) `
         -ComplexityEnabled $true `
         -LockoutThreshold 10 `
         -LockoutDuration (New-TimeSpan -Minutes 15) `
         -LockoutObservationWindow (New-TimeSpan -Minutes 15)
+    Write-Setting "AD attributes set via Set-ADDefaultDomainPasswordPolicy"
 
-    Write-Setting "MinPasswordLength      = 16"
-    Write-Setting "PasswordHistoryCount   = 24"
-    Write-Setting "MinPasswordAge         = 0"
-    Write-Setting "ComplexityEnabled      = True"
-    Write-Setting "LockoutThreshold       = 10"
-    Write-Setting "LockoutDuration        = 15 min"
-    Write-Setting "LockoutObservationWindow = 15 min"
+    # Verify: read GptTmpl.inf back
+    $verifyPwdInf = Get-Content $ddpInfPath -ErrorAction SilentlyContinue
+    if ($verifyPwdInf) {
+        foreach ($key in $pwdSettings.Keys) {
+            $expected = "$($pwdSettings[$key])"
+            $match = $verifyPwdInf | Where-Object { $_ -match "^\s*$key\s*=" }
+            if ($match -and $match -match "=\s*(-?\d+)") { $val = $Matches[1] } else { $val = "MISSING" }
+            Test-Result "Password GptTmpl $key" $expected $val
+        }
+    } else {
+        Write-Fail "FAIL: Could not read back GptTmpl.inf for password verification"
+    }
+
+    # Verify: read AD attributes back
+    $adPwd = Get-ADDefaultDomainPasswordPolicy -Identity $Domain
+    Test-Result "AD MinPasswordLength" "16" "$($adPwd.MinPasswordLength)"
+    Test-Result "AD PasswordHistoryCount" "24" "$($adPwd.PasswordHistoryCount)"
+    Test-Result "AD ComplexityEnabled" "True" "$($adPwd.ComplexityEnabled)"
+    Test-Result "AD LockoutThreshold" "10" "$($adPwd.LockoutThreshold)"
 
     $summary += "Password Policy"
 }
@@ -312,6 +453,16 @@ if ($runScriptPolicy) {
         -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell" `
         -ValueName "ExecutionPolicy" -Value "AllSigned" -Type String | Out-Null
     Write-Setting "ExecutionPolicy = AllSigned"
+
+    # Verify
+    try {
+        $readBack = (Get-GPRegistryValue -Name $GPOName `
+            -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell" `
+            -ValueName "ExecutionPolicy" -ErrorAction Stop).Value
+        Test-Result "ExecutionPolicy" "AllSigned" $readBack
+    } catch {
+        Write-Fail "FAIL: Could not read back ExecutionPolicy"
+    }
 
     $summary += "Script Policy"
 }
@@ -475,10 +626,25 @@ if ($summary.Count -eq 0) {
     Write-Host "  Sections applied:" -ForegroundColor Green
     foreach ($s in $summary) { Write-Host "    - $s" -ForegroundColor Green }
 }
+
+# ── Verification Summary ────────────────────────────────────────────────────
+
+Write-Banner "Verification Summary"
+if ($script:failures.Count -eq 0) {
+    Write-Host "  All verifications passed." -ForegroundColor Green
+} else {
+    Write-Host "  $($script:failures.Count) verification(s) FAILED:" -ForegroundColor Red
+    foreach ($f in $script:failures) {
+        Write-Host "    - $f" -ForegroundColor Red
+    }
+}
+
 Write-Host ""
-Write-Host "  Verify with:" -ForegroundColor White
+Write-Host "  Manual checks:" -ForegroundColor White
 Write-Host "    gpmc.msc            - '$GPOName' GPO linked to domain" -ForegroundColor Gray
 Write-Host "    auditpol /get /category:* - audit categories on DC" -ForegroundColor Gray
 Write-Host "    gpresult /r         - on remote machines after gpupdate" -ForegroundColor Gray
 Write-Host "    net accounts        - password policy" -ForegroundColor Gray
 Write-Host ""
+
+if ($script:failures.Count -gt 0) { exit 1 }
