@@ -34,48 +34,90 @@ Remove-Item -Path $installerPath
 
 ### 3. Install Sysinternals
 <details>
-<summary>Downloads suite, extracts important tools to C:\Important-Sysinternals</summary>
+<summary>Downloads suite to C:\Sysinternals, accepts EULAs</summary>
 
 ```powershell
 $url = "https://download.sysinternals.com/files/SysinternalsSuite.zip"
-$destination = "$env:USERPROFILE\Downloads\SysinternalsSuite.zip"
-$extractPath = "C:\Sysinternals"
-$importantToolsPath = "C:\Important-Sysinternals"
+$zip = "$env:TEMP\SysinternalsSuite.zip"
+$temp = "$env:TEMP\SysinternalsExtract"
+$dest = "C:\Sysinternals"
 
-$importantTools = @(
-    'procexp64.exe',
-    'Procmon64.exe',
-    'Autoruns64.exe',
-    'PsLoggedOn.exe',
-    'LogonSessions.exe',
-    'AccessChk.exe',
-    'VMMap.exe',
-    'Sigcheck.exe',
-    'Tcpview.exe',
-    'PsService.exe',
-    'Sysmon64.exe'
+$keep = @(
+    'procexp64.exe', 'Procmon64.exe', 'Autoruns64.exe', 'autorunsc64.exe',
+    'Tcpview.exe', 'Sysmon64.exe', 'Sigcheck64.exe',
+    'PsLoggedOn.exe', 'PsService.exe', 'AccessChk64.exe',
+    'handle64.exe', 'listdlls64.exe', 'strings64.exe'
 )
 
-Invoke-WebRequest -Uri $url -OutFile $destination
+Invoke-WebRequest -Uri $url -OutFile $zip
+Expand-Archive -Path $zip -DestinationPath $temp -Force
+New-Item $dest -ItemType Directory -ErrorAction SilentlyContinue
+foreach ($tool in $keep) {
+    $src = Join-Path $temp $tool
+    if (Test-Path $src) { Copy-Item $src $dest -Force }
+}
+Remove-Item $zip, $temp -Recurse -Force
 
-if (-not (Test-Path $extractPath)) {
-    New-Item -Path $extractPath -ItemType Directory
+# Accept all Sysinternals EULAs so tools don't pop a dialog on first run
+reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f | Out-Null
+
+# Set all .exe files to always run as admin
+Get-ChildItem "$dest\*.exe" | ForEach-Object {
+    Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" `
+        -Name $_.FullName -Value "~ RUNASADMIN" -ErrorAction SilentlyContinue
 }
 
-Expand-Archive -Path $destination -DestinationPath $extractPath -Force
+# Install Sysmon with config
+@'
+<Sysmon schemaversion="4.50">
+  <EventFiltering>
+    <ProcessCreate onmatch="exclude" />
+    <NetworkConnect onmatch="exclude" />
+    <FileCreate onmatch="include">
+      <TargetFilename condition="end with">.exe</TargetFilename>
+      <TargetFilename condition="end with">.dll</TargetFilename>
+      <TargetFilename condition="end with">.sys</TargetFilename>
+      <TargetFilename condition="end with">.scr</TargetFilename>
+      <TargetFilename condition="end with">.ps1</TargetFilename>
+      <TargetFilename condition="end with">.bat</TargetFilename>
+      <TargetFilename condition="end with">.cmd</TargetFilename>
+      <TargetFilename condition="end with">.vbs</TargetFilename>
+      <TargetFilename condition="end with">.js</TargetFilename>
+      <TargetFilename condition="end with">.wsf</TargetFilename>
+      <TargetFilename condition="end with">.hta</TargetFilename>
+      <TargetFilename condition="end with">.msi</TargetFilename>
+    </FileCreate>
+  </EventFiltering>
+</Sysmon>
+'@ | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
+& "$dest\Sysmon64.exe" -i "$env:TEMP\sc.xml" -accepteula
 
-if (-not (Test-Path $importantToolsPath)) {
-    New-Item -Path $importantToolsPath -ItemType Directory
-}
+# Launch the tools you actually need open during competition
+Start-Process "$dest\procexp64.exe"   # process explorer
+Start-Process "$dest\Autoruns64.exe"  # startup/persistence items
+Start-Process "$dest\Tcpview.exe"     # live network connections
 
-foreach ($tool in $importantTools) {
-    $currentToolPath = Join-Path $extractPath $tool
-    if (Test-Path $currentToolPath) {
-        Copy-Item -Path $currentToolPath -Destination $importantToolsPath -Force
-    }
-}
+Write-Host "[+] Sysinternals installed to $dest — Sysmon running, tools launched" -ForegroundColor Green
+```
+</details>
 
-Write-Output "Files processed to C: root folders."
+<details>
+<summary>Manual Sysmon / legacy full Sysinternals install</summary>
+
+```powershell
+# Sysmon: check status
+sc query Sysmon64
+# Sysmon: update config (re-run the install script's XML block first)
+C:\Sysinternals\Sysmon64.exe -c "$env:TEMP\sc.xml"
+# Sysmon: uninstall
+C:\Sysinternals\Sysmon64.exe -u
+```
+```powershell
+# Legacy: download full suite (all tools, no filtering)
+Invoke-WebRequest "https://download.sysinternals.com/files/SysinternalsSuite.zip" -OutFile "$env:TEMP\ss.zip"
+Expand-Archive "$env:TEMP\ss.zip" -DestinationPath "C:\Sysinternals" -Force
+Remove-Item "$env:TEMP\ss.zip"
+reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f
 ```
 </details>
 
@@ -134,39 +176,7 @@ Get-Process | Where-Object { $_.Name -eq 'sshd' -or $_.Name -eq 'ssh' } | Stop-P
 > [!TIP]
 > **Monitoring & Detection** — Get visibility before hardening
 
-### 6. Launch Sysinternals Tools (as admin)
-- `procexp64.exe` — process explorer
-- `Autoruns64.exe` — startup/persistence items
-- `Tcpview.exe` — live network connections
-
-### 7. Run Sysmon
-Logs process creation (Event 1), network connections (Event 3), and file creation (Event 11) for executables/scripts only.
-```powershell
-@'
-<Sysmon schemaversion="4.50">
-  <EventFiltering>
-    <ProcessCreate onmatch="exclude" />
-    <NetworkConnect onmatch="exclude" />
-    <FileCreate onmatch="include">
-      <TargetFilename condition="end with">.exe</TargetFilename>
-      <TargetFilename condition="end with">.dll</TargetFilename>
-      <TargetFilename condition="end with">.sys</TargetFilename>
-      <TargetFilename condition="end with">.scr</TargetFilename>
-      <TargetFilename condition="end with">.ps1</TargetFilename>
-      <TargetFilename condition="end with">.bat</TargetFilename>
-      <TargetFilename condition="end with">.cmd</TargetFilename>
-      <TargetFilename condition="end with">.vbs</TargetFilename>
-      <TargetFilename condition="end with">.js</TargetFilename>
-      <TargetFilename condition="end with">.wsf</TargetFilename>
-      <TargetFilename condition="end with">.hta</TargetFilename>
-      <TargetFilename condition="end with">.msi</TargetFilename>
-    </FileCreate>
-  </EventFiltering>
-</Sysmon>
-'@ | Out-File "$env:TEMP\sc.xml" -Encoding UTF8; .\Sysmon64.exe -i "$env:TEMP\sc.xml" -accepteula
-```
-
-### 8. Run Sigcheck
+### 6. Run Sigcheck
 ```powershell
 .\sigcheck.exe -i "C:\\
 ```
