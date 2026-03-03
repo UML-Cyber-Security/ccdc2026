@@ -276,51 +276,57 @@ gsv RemoteRegistry,TlntSvr,SNMP -ea 0 | spsv -f -pas | Set-Service -st Disabled
 
 ### 13. Enable Windows Defender
 <details>
-<summary>Remove red team blocks, re-enable, clear exclusions, update & scan</summary>
+<summary>Apply GPO, clean up exclusions, verify Defender is running</summary>
+
+> [!IMPORTANT]
+> `Harden-GPO.ps1` (step 12) handles enabling Defender via GPO. This script pulls that policy, does local cleanup GPO can't do, and confirms everything works.
 
 ```powershell
-# Remove registry keys that red team uses to disable Defender
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -ErrorAction SilentlyContinue
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" -Name "DisableRealtimeMonitoring" -ErrorAction SilentlyContinue
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" -Name "DisableBehaviorMonitoring" -ErrorAction SilentlyContinue
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" -Name "DisableOnAccessProtection" -ErrorAction SilentlyContinue
-Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" -Name "DisableScanOnRealtimeEnable" -ErrorAction SilentlyContinue
+# ── Pull GPO and start the service ───────────────────────────────────────────
+gpupdate /force
+sc.exe config WinDefend start= auto 2>&1 | Out-Null
+net start WinDefend 2>&1 | Out-Null
+Start-Sleep -Seconds 3
 
-# Re-enable the Defender service if it was disabled
-Set-Service -Name WinDefend -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service -Name WinDefend -ErrorAction SilentlyContinue
+# Re-enable Defender scheduled tasks red team may have disabled
+Get-ScheduledTask -TaskPath "\Microsoft\Windows\Windows Defender\*" -ErrorAction SilentlyContinue |
+    Enable-ScheduledTask -ErrorAction SilentlyContinue
 
-# Remove any exclusions red team may have added (exclude nothing)
-$prefs = Get-MpPreference
-$prefs.ExclusionPath | ForEach-Object { Remove-MpPreference -ExclusionPath $_ -ErrorAction SilentlyContinue }
-$prefs.ExclusionProcess | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ -ErrorAction SilentlyContinue }
-$prefs.ExclusionExtension | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ -ErrorAction SilentlyContinue }
+# ── Remove exclusions red team added (GPO can't do this) ────────────────────
+$prefs = Get-MpPreference -ErrorAction SilentlyContinue
+if ($prefs) {
+    @($prefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionPath $_ -ErrorAction SilentlyContinue }
+    @($prefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ -ErrorAction SilentlyContinue }
+    @($prefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ -ErrorAction SilentlyContinue }
+}
 
-# Enable real-time protection
-Set-MpPreference -DisableRealtimeMonitoring $false
-
-# Enable cloud-delivered protection
-Set-MpPreference -MAPSReporting Advanced
-
-# Enable automatic sample submission
-Set-MpPreference -SubmitSamplesConsent SendAllSamples
-
-# Enable behavior monitoring
-Set-MpPreference -DisableBehaviorMonitoring $false
-
-# Enable scanning of network files
-Set-MpPreference -DisableScanningNetworkFiles $false
-
-# Enable PUA (potentially unwanted application) detection
-Set-MpPreference -PUAProtection Enabled
-
-# Update signatures and run a quick scan
+# ── Update signatures and scan ───────────────────────────────────────────────
 Update-MpSignature
 Start-MpScan -ScanType QuickScan
+
+# ── Verify ───────────────────────────────────────────────────────────────────
+$s = Get-MpComputerStatus
+Write-Host ""
+Write-Host "=== Defender Status ===" -ForegroundColor Cyan
+Write-Host "  AMServiceEnabled:        $($s.AMServiceEnabled)"          -ForegroundColor $(if($s.AMServiceEnabled){'Green'}else{'Red'})
+Write-Host "  RealTimeProtection:      $($s.RealTimeProtectionEnabled)" -ForegroundColor $(if($s.RealTimeProtectionEnabled){'Green'}else{'Red'})
+Write-Host "  BehaviorMonitor:         $($s.BehaviorMonitorEnabled)"    -ForegroundColor $(if($s.BehaviorMonitorEnabled){'Green'}else{'Red'})
+Write-Host "  OnAccessProtection:      $($s.OnAccessProtectionEnabled)" -ForegroundColor $(if($s.OnAccessProtectionEnabled){'Green'}else{'Red'})
+Write-Host "  IoavProtection:          $($s.IoavProtectionEnabled)"     -ForegroundColor $(if($s.IoavProtectionEnabled){'Green'}else{'Red'})
+Write-Host "  AntivirusSignatureAge:   $($s.AntivirusSignatureAge) days" -ForegroundColor $(if($s.AntivirusSignatureAge -le 1){'Green'}else{'Yellow'})
+Write-Host ""
+if ($s.AMServiceEnabled -and $s.RealTimeProtectionEnabled) {
+    Write-Host "[OK] Defender is fully operational" -ForegroundColor Green
+} else {
+    Write-Host "[FAIL] Defender is NOT fully operational — check GPO on DC" -ForegroundColor Red
+}
 ```
 
 > [!NOTE]
-> If Defender still won't start, check: `Get-MpComputerStatus` — if `AMServiceEnabled` is false, the binary may have been deleted or Tamper Protection is blocking changes via GPO. Try `gpmc.msc` to remove any GPO disabling Defender.
+> **If Defender still won't start:**
+> 1. On the DC: `gpmc.msc` > look for GPOs disabling Defender under Computer Config > Policies > Admin Templates > Windows Components > Windows Defender Antivirus — delete them
+> 2. On this machine: `gpupdate /force` and re-run the script above
+> 3. If the WinDefend binary was deleted: `sfc /scannow` or `DISM /Online /Cleanup-Image /RestoreHealth`
 
 </details>
 

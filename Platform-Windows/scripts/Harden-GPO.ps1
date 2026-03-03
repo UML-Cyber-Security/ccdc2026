@@ -5,7 +5,7 @@
 .DESCRIPTION
     Replaces the old enforce-gpo Ansible role. Creates a "Hardening" GPO (or custom name)
     linked to the domain root, then applies audit, password, encryption, credential-protection,
-    and network-hardening settings through that GPO.
+    network-hardening, and Windows Defender enablement settings through that GPO.
 
 .EXAMPLE
     # Full hardening (reset + everything)
@@ -337,13 +337,25 @@ if ($runPasswordPolicy) {
 
     $ddpInfPath = "$ddpSecEditPath\GptTmpl.inf"
 
+    # Enable MinimumPasswordLength > 14 (required before setting length to 16)
+    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\SAM" `
+        -Name "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord -Force
+    Write-Setting "RelaxMinimumPasswordLengthLimits = 1 (allows MinPasswordLength > 14)"
+
+    # Also push RelaxMinimumPasswordLengthLimits via Default Domain Policy GPO
+    Set-GPRegistryValue -Name "Default Domain Policy" `
+        -Key "HKLM\System\CurrentControlSet\Control\SAM" `
+        -ValueName "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord | Out-Null
+    Write-Setting "RelaxMinimumPasswordLengthLimits pushed via Default Domain Policy GPO"
+
     # Password/lockout values to set
+    # NIST SP 800-63B 2024: length-based policy, no composition rules
     $pwdSettings = [ordered]@{
         MinimumPasswordLength = 16
         PasswordHistorySize   = 24
         MinimumPasswordAge    = 0
         MaximumPasswordAge    = -1
-        PasswordComplexity    = 1
+        PasswordComplexity    = 0
         ClearTextPassword     = 0
         LockoutBadCount       = 10
         ResetLockoutCount     = 15
@@ -410,12 +422,13 @@ Revision=1
     Write-Setting "Default Domain Policy version bumped to $ddpNewVer"
 
     # Belt-and-suspenders: also set via AD cmdlet
+    # NIST SP 800-63B 2024: complexity disabled (no composition rules)
     Set-ADDefaultDomainPasswordPolicy -Identity $Domain `
         -MinPasswordLength 16 `
         -PasswordHistoryCount 24 `
         -MinPasswordAge ([TimeSpan]::Zero) `
         -MaxPasswordAge ([TimeSpan]::Zero) `
-        -ComplexityEnabled $true `
+        -ComplexityEnabled $false `
         -LockoutThreshold 10 `
         -LockoutDuration (New-TimeSpan -Minutes 15) `
         -LockoutObservationWindow (New-TimeSpan -Minutes 15)
@@ -438,7 +451,7 @@ Revision=1
     $adPwd = Get-ADDefaultDomainPasswordPolicy -Identity $Domain
     Test-Result "AD MinPasswordLength" "16" "$($adPwd.MinPasswordLength)"
     Test-Result "AD PasswordHistoryCount" "24" "$($adPwd.PasswordHistoryCount)"
-    Test-Result "AD ComplexityEnabled" "True" "$($adPwd.ComplexityEnabled)"
+    Test-Result "AD ComplexityEnabled" "False" "$($adPwd.ComplexityEnabled)"
     Test-Result "AD LockoutThreshold" "10" "$($adPwd.LockoutThreshold)"
 
     $summary += "Password Policy"
@@ -567,6 +580,54 @@ if ($runCredProtection) {
     $summary += "Credential Protection"
 }
 
+# ── Windows Defender (via GPO) ───────────────────────────────────────────────
+
+if ($runCredProtection) {
+    Write-Banner "Windows Defender (GPO)"
+
+    # Enable Defender (remove any GPO-level disabling)
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender" `
+        -ValueName "DisableAntiSpyware" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender" `
+        -ValueName "DisableAntiVirus" -Value 0
+
+    # Enable real-time protection
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableRealtimeMonitoring" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableBehaviorMonitoring" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableOnAccessProtection" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableScanOnRealtimeEnable" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableIOAVProtection" -Value 0
+
+    # Enable cloud-delivered protection (MAPS)
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Spynet" `
+        -ValueName "SpynetReporting" -Value 2
+
+    # Enable PUA detection
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\MpEngine" `
+        -ValueName "MpEnablePus" -Value 1
+
+    $summary += "Windows Defender"
+}
+
 # ── Network Hardening ────────────────────────────────────────────────────────
 
 if ($runNetworkHardening) {
@@ -615,6 +676,51 @@ if ($runNetworkHardening) {
 
 Write-Banner "Applying Group Policy"
 & gpupdate /force 2>&1 | ForEach-Object { Write-Host "    $_" }
+
+# ── Post-gpupdate Verification ──────────────────────────────────────────────
+
+Write-Banner "Post-gpupdate Verification"
+
+if ($runPasswordPolicy) {
+    # Verify effective password policy via net accounts
+    $netAccounts = net accounts 2>&1
+    foreach ($line in $netAccounts) {
+        if ($line -match "Minimum password length\s+(\d+)") {
+            Test-Result "Effective MinPasswordLength" "16" $Matches[1]
+        }
+        if ($line -match "Lockout threshold\s+(\d+)") {
+            Test-Result "Effective LockoutThreshold" "10" $Matches[1]
+        }
+        if ($line -match "Lockout duration.*?(\d+)") {
+            Test-Result "Effective LockoutDuration" "15" $Matches[1]
+        }
+        if ($line -match "Length of password history\s+(\d+)") {
+            Test-Result "Effective PasswordHistory" "24" $Matches[1]
+        }
+    }
+}
+
+if ($runAuditPolicy) {
+    # Verify effective audit policy via auditpol
+    $auditOut = auditpol /get /category:* 2>&1
+    $auditCategories = @{
+        "Logon/Logoff"       = "Success and Failure"
+        "Account Logon"      = "Success and Failure"
+        "Account Management" = "Success and Failure"
+        "Policy Change"      = "Success and Failure"
+        "Privilege Use"      = "Success and Failure"
+        "Object Access"      = "Success and Failure"
+        "System"             = "Success and Failure"
+        "DS Access"          = "Success and Failure"
+        "Detailed Tracking"  = "Success and Failure"
+    }
+    foreach ($cat in $auditCategories.Keys) {
+        $match = $auditOut | Where-Object { $_ -match "^\s+$cat\s+" }
+        if ($match -and $match -match "(Success and Failure|Success|Failure|No Auditing)") {
+            Test-Result "Effective Audit '$cat'" $auditCategories[$cat] $Matches[1]
+        }
+    }
+}
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

@@ -134,10 +134,11 @@ To follow CIS Benchmark and NIST 800-63B recommendations:
 3. Right click **Default Domain Policy** -> **Edit**
 4. Click on the arrow besides **Computer Configuration** -> **Windows Settings** -> **Security Settings** -> **Account Policies**
 
-### Password Policy
+### Password Policy (NIST SP 800-63B 2024)
 - **Enforce password history** = 24 passwords remembered
 - **Minimum password age** = 0
-- **Minimum password length** = 14 characters
+- **Minimum password length** = 16 characters
+- **Password must meet complexity requirements** = Disabled
 
 ### Account Lockout Policy
 - **Account lockout duration** = 15 minutes
