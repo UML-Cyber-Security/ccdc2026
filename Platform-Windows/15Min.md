@@ -90,7 +90,7 @@ Get-ChildItem "$dest\*.exe" | ForEach-Object {
   </EventFiltering>
 </Sysmon>
 '@ | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
-& "$dest\Sysmon64.exe" -i "$env:TEMP\sc.xml" -accepteula
+Start-Process -FilePath "$dest\Sysmon64.exe" -ArgumentList "-i `"$env:TEMP\sc.xml`" -accepteula" -Wait -NoNewWindow
 
 # Launch the tools you actually need open during competition
 Start-Process "$dest\procexp64.exe"   # process explorer
@@ -129,26 +129,80 @@ reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f
 ### 4. Disable & Reset Accounts
 
 **Local accounts:**
+<details>
+<summary>List all local users with group memberships</summary>
+
 ```powershell
-Get-LocalUser
+Get-LocalUser | Select-Object Name, Enabled, LastLogon, @{N='Groups';E={
+    $user = $_.Name
+    $g = @()
+    Get-LocalGroup | ForEach-Object {
+        if ((Get-LocalGroupMember $_ -ErrorAction SilentlyContinue).Name -like "*\$user") { $g += $_.Name }
+    }
+    $g -join ', '
+}} | Format-Table -AutoSize
 ```
+</details>
+**Disable:**
 ```powershell
-net user <USERNAME> /active:no
+"Guest","Administrator" | ForEach-Object { Disable-LocalUser -Name $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
 ```
+**Re-enable:**
 ```powershell
-net user <USERNAME> *
+"Guest","Administrator" | ForEach-Object { Enable-LocalUser -Name $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
 ```
 
-**AD accounts:**
+**AD accounts (DC only):**
+<details>
+<summary>List all AD users with group memberships</summary>
+
 ```powershell
-Get-ADUser -Filter *
+Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, Enabled, LastLogonDate, @{N='Groups';E={
+    ($_.MemberOf | ForEach-Object { ($_ -split ',')[0] -replace 'CN=' }) -join ', '
+}} | Format-Table -AutoSize
 ```
+</details>
+**Disable:**
 ```powershell
-Disable-ADAccount -Identity <USERNAME>
+"Guest","krbtgt" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
 ```
+**Re-enable:**
 ```powershell
-Set-ADAccountPassword -Identity <USERNAME> -Reset
+"Guest" | ForEach-Object { Enable-ADAccount -Identity $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
 ```
+**Strip all groups from all users EXCEPT a keep list** (leaves them in Domain Users only — enabled but powerless):
+<details>
+<summary>Dry-run preview, then batch strip by group</summary>
+
+```powershell
+$keep = @("Administrator","krbtgt")
+$users = @(Get-ADUser -Filter * -Properties MemberOf | Where-Object { $_.SamAccountName -notin $keep -and $_.MemberOf })
+
+# Preview what will be stripped
+Write-Host "`n=== DRY RUN — will strip groups from $($users.Count) users ===" -ForegroundColor Cyan
+Write-Host "  Keeping: $($keep -join ', ')" -ForegroundColor Green
+Write-Host ""
+foreach ($u in $users) {
+    $groups = ($u.MemberOf | ForEach-Object { ($_ -split ',')[0] -replace 'CN=' }) -join ', '
+    Write-Host "  $($u.SamAccountName) — $groups" -ForegroundColor Yellow
+}
+Write-Host ""
+$confirm = Read-Host "Proceed? (y/n)"
+if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
+
+# Execute
+$groupMap = @{}
+foreach ($u in $users) {
+    foreach ($g in $u.MemberOf) { if (-not $groupMap[$g]) { $groupMap[$g] = @() }; $groupMap[$g] += $u.SamAccountName }
+}
+foreach ($g in $groupMap.Keys) {
+    $name = ($g -split ',')[0] -replace 'CN='
+    Remove-ADGroupMember -Identity $g -Members $groupMap[$g] -Confirm:$false
+    Write-Host "  $name — removed: $($groupMap[$g] -join ', ')" -ForegroundColor Green
+}
+Write-Host "`n  Done. Stripped $($users.Count) users." -ForegroundColor Cyan
+```
+</details>
 
 **Reset krbtgt twice (DC only)** — kills Golden Tickets. Reset twice because AD keeps current + previous hash.
 ```powershell
@@ -156,19 +210,65 @@ Get-ADUser krbtgt | Set-ADAccountPassword -Reset -NewPassword (ConvertTo-SecureS
 ```
 Run the above command **twice** back-to-back. May briefly break Kerberos auth.
 
-### 5. Kick Active Sessions
+### 5. Review & Kick Active Sessions
 
 > [!WARNING]
 > **Disabling an account does NOT kick active sessions.** You must also logoff/terminate existing sessions.
+
+**Show all active sessions (RDP, SSH, WinRM):**
+<details>
+<summary>Lists RDP, SSH, WinRM sessions with color-coded status</summary>
+
+```powershell
+Write-Host "`n=== RDP Sessions ===" -ForegroundColor Cyan
+$rdp = qwinsta 2>&1 | Where-Object { $_ -match "rdp-tcp|console" -and $_ -notmatch "^SESSIONNAME" }
+if ($rdp) { $rdp | ForEach-Object { Write-Host "  $_" } } else { Write-Host "  None" -ForegroundColor Gray }
+
+Write-Host "`n=== SSH ===" -ForegroundColor Cyan
+$sshService = Get-Service sshd -ErrorAction SilentlyContinue
+if ($sshService) {
+    Write-Host "  OpenSSH Server: $($sshService.Status)" -ForegroundColor $(if($sshService.Status -eq 'Running'){'Yellow'}else{'Green'})
+    $sshProcs = Get-Process sshd -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $sshService.Id }
+    if ($sshProcs) {
+        Write-Host "  Active SSH sessions:" -ForegroundColor Yellow
+        $sshProcs | ForEach-Object { Write-Host "    PID $($_.Id) — started $($_.StartTime)" }
+    } else { Write-Host "  No active SSH sessions" -ForegroundColor Gray }
+} else { Write-Host "  OpenSSH Server: Not installed" -ForegroundColor Green }
+
+Write-Host "`n=== WinRM ===" -ForegroundColor Cyan
+$winrmService = Get-Service WinRM -ErrorAction SilentlyContinue
+if ($winrmService) {
+    Write-Host "  WinRM Service: $($winrmService.Status)" -ForegroundColor $(if($winrmService.Status -eq 'Running'){'Yellow'}else{'Green'})
+    if ($winrmService.Status -eq 'Running') {
+        $sessions = Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue
+        if ($sessions) {
+            Write-Host "  Active WinRM sessions:" -ForegroundColor Yellow
+            $sessions | ForEach-Object { Write-Host "    Owner: $($_.Owner) — Shell: $($_.ShellId) — Idle: $($_.ShellInactivity)s" }
+        } else { Write-Host "  No active WinRM sessions" -ForegroundColor Gray }
+    }
+} else { Write-Host "  WinRM Service: Not installed" -ForegroundColor Green }
+
+Write-Host ""
+```
+</details>
 
 **Kick all RDP sessions:**
 ```powershell
 qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|Disc")) { logoff $matches[1] } }
 ```
-
-**Kick SSH sessions:**
+**Kick a specific RDP session** (use session ID from `qwinsta` output):
 ```powershell
-Get-Process | Where-Object { $_.Name -eq 'sshd' -or $_.Name -eq 'ssh' } | Stop-Process -Force
+logoff <SESSION_ID>
+```
+
+**Kill all SSH sessions:**
+```powershell
+Get-Process sshd, ssh -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+**Kill all WinRM sessions:**
+```powershell
+Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue | ForEach-Object { Remove-WSManInstance -ResourceURI shell -SelectorSet @{ShellId=$_.ShellId} }
 ```
 
 ---
