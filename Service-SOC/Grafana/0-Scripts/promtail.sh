@@ -51,6 +51,25 @@ scrape_configs:
           job: auth
           host: soc-server
           __path__: /var/log/auth.log
+
+  - job_name: auditd
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: auditd
+          host: soc-server
+          __path__: /var/log/audit/audit.log
+        
+  - job_name: sysmon
+    journal:
+      matches: SYSLOG_IDENTIFIER=sysmon
+    relabel_configs:
+      - source_labels: [__journal__hostname]
+        target_label: host
+        replacement: soc-server
+      - target_label: job
+        replacement: sysmon
 EOF
 
 sudo tee /etc/systemd/system/promtail.service <<'EOF'
