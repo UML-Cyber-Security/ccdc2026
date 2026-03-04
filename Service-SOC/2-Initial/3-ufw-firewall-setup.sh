@@ -2,7 +2,7 @@
 
 #********************************
 # Written by Michael Leahy
-# Last Updated: February 22, 2026
+# Last Updated: March 3, 2026
 #********************************
 
 # Check if the script is ran as root.
@@ -42,7 +42,7 @@ fi
 # set default rules
 echo "[+] Adding default incoming and outgoing rules..."
 ufw default deny incoming
-ufw default deny outgoing
+ufw default allow outgoing
 
 # Allow ssh
 echo "[+] Allowing SSH..."
@@ -67,5 +67,11 @@ echo "[!!] UFW configuration complete. Add custom rules if necessary"
 
 # Flush the connection tracking table
 echo "[!!] Flushing connection tracking table..."
-apt install conntrack -y
+if command -v apt >/dev/null 2>&1; then
+    apt update && apt install conntrack -y
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install conntrack-tools -y
+elif command -v yum >/dev/null 2>&1; then
+    yum install conntrack-tools -y
+fi
 conntrack -F
