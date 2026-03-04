@@ -1,7 +1,7 @@
 # UFW Firewall Setup Script
 
 **Author:** Michael Leahy  
-**Last Updated:** February 19, 2026
+**Last Updated:** March 3, 2026
 
 ## Overview
 
@@ -13,7 +13,7 @@ It performs the following actions:
 - Allows essential services (SSH, HTTP, HTTPS, DNS)
 - Enables UFW  
 
-This script sets default deny for both incoming and outgoing traffic. It is intended for Debian-based distributions. The script must be run with root privileges.
+This script sets default deny for incoming and default allow outgoing traffic. The script must be run with root privileges.
 
 ## Usage
 ```bash
@@ -21,9 +21,7 @@ sudo ./ufw-firewall-setup.sh
 ```
 ## Default Policis
 - **Incoming:** Deny all
-- **Outgoing:** Deny all  
-
-No traffic is allowed unless explicitly permitted
+- **Outgoing:** Allow all  
 
 ## Allowed Rules
 #### SSH
