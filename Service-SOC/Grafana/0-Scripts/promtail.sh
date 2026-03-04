@@ -67,6 +67,7 @@ scrape_configs:
     relabel_configs:
       - source_labels: [__journal__hostname]
         target_label: host
+        replacement: soc-server
       - target_label: job
         replacement: sysmon
 EOF
