@@ -148,6 +148,7 @@ $defaultUsers = @{
     "Print Operators"        = @()
     "Remote Desktop Users"   = @()
     "DnsAdmins"              = @()
+    "Denied RODC Password Replication Group" = @("krbtgt")
 }
 
 # Which groups should be nested in which groups
@@ -155,7 +156,8 @@ $defaultGroupNesting = @{
     "Administrators" = @("Domain Admins", "Enterprise Admins")
     "Denied RODC Password Replication Group" = @(
         "Domain Admins", "Enterprise Admins", "Schema Admins",
-        "Read-only Domain Controllers", "Domain Controllers"
+        "Read-only Domain Controllers", "Domain Controllers",
+        "Cert Publishers", "Group Policy Creator Owners"
     )
     "Group Policy Creator Owners" = @()
     "Schema Admins"          = @()
@@ -324,7 +326,7 @@ Write-Host "[+] SSH killed, disabled, and blocked" -ForegroundColor Green
 
 #### Install Nmap
 ```powershell
-$nmapUrl = "https://nmap.org/dist/nmap-7.93-setup.exe"
+$nmapUrl = "https://nmap.org/dist/nmap-7.98-setup.exe"
 $installerPath = "$env:USERPROFILE\Downloads\nmap-setup.exe"
 Invoke-WebRequest -Uri $nmapUrl -OutFile $installerPath
 Start-Process -FilePath $installerPath -ArgumentList '/forceinstall /NpcapInstallMode=1' -Wait
@@ -1240,7 +1242,6 @@ Get-ADUser -Filter * | ForEach-Object {
     $pw = Generate-RandomPassword
     try {
         Set-ADAccountPassword -Identity $_.SamAccountName -Reset -NewPassword (ConvertTo-SecureString $pw -AsPlainText -Force)
-        Set-ADUser -Identity $_.SamAccountName -ChangePasswordAtLogon $true
         "$($_.SamAccountName),$pw" | Out-File -FilePath $logFile -Append
         Write-Host "[+] $($_.SamAccountName)" -ForegroundColor Green
     } catch { Write-Host "[-] $($_.SamAccountName): $_" -ForegroundColor Red }
