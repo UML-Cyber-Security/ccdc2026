@@ -370,8 +370,29 @@ Get-NetFirewallProfile | Format-Table Name, Enabled -AutoSize
 # ── Point this to the extracted GPOBackups folder ───────────────────────────
 $backupPath = "C:\GPOBackups"   # <-- CHANGE to wherever you extracted GPOBackups.zip
 
-# ── Import ──────────────────────────────────────────────────────────────────
+# ── Backup existing GPOs (safety net) ────────────────────────────────────────
 Import-Module GroupPolicy, ActiveDirectory
+$ts = Get-Date -Format "yyyyMMdd-HHmmss"
+$exportPath = "C:\GPO-Export-$ts"
+New-Item -Path $exportPath -ItemType Directory -Force | Out-Null
+try {
+    Get-GPO -All | ForEach-Object {
+        Backup-GPO -Guid $_.Id -Path $exportPath -ErrorAction Stop | Out-Null
+        Write-Host "  Backed up: $($_.DisplayName)" -ForegroundColor Gray
+    }
+    Compress-Archive -Path $exportPath -DestinationPath "$exportPath.zip" -ErrorAction Stop -Force
+    Write-Host "[+] All GPOs exported to $exportPath.zip" -ForegroundColor Green
+} catch {
+    Write-Host "[X] GPO backup failed: $_" -ForegroundColor Red
+    Write-Host "    Aborting — will NOT reset GPOs without a good backup." -ForegroundColor Red
+    return
+}
+
+# ── Reset GPOs to defaults (removes any malicious/stale settings) ────────────
+"Y","Y" | dcgpofix /target:both 2>&1 | ForEach-Object { Write-Host "    $_" }
+gpupdate /force
+
+# ── Import hardened GPOs ─────────────────────────────────────────────────────
 $DomainDN = (Get-ADDomain).DistinguishedName
 
 New-GPO -Name "Hardening" -ErrorAction SilentlyContinue
