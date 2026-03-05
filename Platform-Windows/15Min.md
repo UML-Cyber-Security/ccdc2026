@@ -850,10 +850,6 @@ if ($runCredProtection) {
 
     Set-RegValue -GPOName $GPOName `
         -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
-        -ValueName "RunAsPPL" -Value 2
-
-    Set-RegValue -GPOName $GPOName `
-        -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
         -ValueName "RestrictAnonymousSAM" -Value 1
 
     Set-RegValue -GPOName $GPOName `
