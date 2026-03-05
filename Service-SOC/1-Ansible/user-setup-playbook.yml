@@ -1,5 +1,0 @@
----
-- name: Create bt accounts
-  hosts: debian
-  roles:
-    - create_accounts
