@@ -122,11 +122,6 @@ Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, E
 }} | Format-Table -AutoSize
 ```
 
-**Disable:**
-```powershell
-"Guest","Administrator" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
-```
-
 #### Reset privileged groups to default AD membership
 ```powershell
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -135,25 +130,36 @@ Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, E
 # ║  Groups listed here get their nested group memberships enforced too.       ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# Which users belong in which groups (by default only Administrator)
+# Our team users — added to all privileged groups
+$ourUsers = @(
+
+)
+
+# Users to NEVER remove from any group (e.g. scoring accounts, service accounts)
+$excludeUsers = @(
+    "blackteam"
+    "black-team"
+    "krbtgt"
+)
+
+# Which users belong in which groups
 $defaultUsers = @{
-    "Domain Admins"          = @("Administrator")
-    "Enterprise Admins"      = @("Administrator")
-    "Schema Admins"          = @("Administrator")
-    "Administrators"         = @("Administrator")
-    "Group Policy Creator Owners" = @("Administrator")
+    "Domain Admins"          = $ourUsers
+    "Enterprise Admins"      = $ourUsers
+    "Schema Admins"          = $ourUsers
+    "Administrators"         = $ourUsers
+    "Group Policy Creator Owners" = $ourUsers
     "Server Operators"       = @()
     "Account Operators"      = @()
     "Backup Operators"       = @()
     "Print Operators"        = @()
-    "Remote Desktop Users"   = @()
     "DnsAdmins"              = @()
     "Denied RODC Password Replication Group" = @("krbtgt")
 }
 
 # Which groups should be nested in which groups
 $defaultGroupNesting = @{
-    "Administrators" = @("Domain Admins", "Enterprise Admins")
+    "Administrators" = @()
     "Denied RODC Password Replication Group" = @(
         "Domain Admins", "Enterprise Admins", "Schema Admins",
         "Read-only Domain Controllers", "Domain Controllers",
@@ -167,18 +173,28 @@ $defaultGroupNesting = @{
     "Account Operators"      = @()
     "Backup Operators"       = @()
     "Print Operators"        = @()
-    "Remote Desktop Users"   = @()
 }
 
-# ── Step 1: Backup current state ─────────────────────────────────────────────
-$backupFile = "$env:USERPROFILE\Desktop\ad-groups-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
-$backupRows = @()
-foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Object -Unique)) {
+# ── Step 0: Create our users if they don't exist ─────────────────────────────
+foreach ($u in $ourUsers) {
     try {
-        $members = Get-ADGroupMember -Identity $groupName -ErrorAction Stop
+        Get-ADUser -Identity $u -ErrorAction Stop | Out-Null
+    } catch {
+        $cred = Get-Credential -UserName $u -Message "Set password for new AD user: $u"
+        New-ADUser -Name $u -SamAccountName $u -AccountPassword $cred.Password -Enabled $true -PasswordNeverExpires $false -ChangePasswordAtLogon $false
+        Write-Host "  CREATED user $u" -ForegroundColor Green
+    }
+}
+
+# ── Step 1: Backup ALL AD group memberships ──────────────────────────────────
+$backupFile = "C:\ad-groups-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
+$backupRows = @()
+foreach ($group in (Get-ADGroup -Filter *)) {
+    try {
+        $members = Get-ADGroupMember -Identity $group -ErrorAction Stop
         foreach ($m in $members) {
             $backupRows += [PSCustomObject]@{
-                Group      = $groupName
+                Group      = $group.Name
                 Member     = $m.SamAccountName
                 MemberType = $m.objectClass
                 MemberDN   = $m.distinguishedName
@@ -189,7 +205,20 @@ foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Ob
 $backupRows | Export-Csv -Path $backupFile -NoTypeInformation
 Write-Host "[+] Backed up current state to $backupFile" -ForegroundColor Green
 
-# ── Step 2: Dry run — show what will change ──────────────────────────────────
+# ── Step 2: Strip ALL group memberships from every user (except excluded) ────
+$skipUsers = @($excludeUsers) + @($ourUsers) + @("krbtgt")
+$allUsers = @(Get-ADUser -Filter * -Properties MemberOf | Where-Object { $_.SamAccountName -notin $skipUsers -and $_.MemberOf })
+
+Write-Host "`n=== PHASE 1: STRIP all group memberships ===" -ForegroundColor Cyan
+Write-Host "  Protected users: $($skipUsers -join ', ')" -ForegroundColor Green
+foreach ($u in $allUsers) {
+    $groups = ($u.MemberOf | ForEach-Object { ($_ -split ',')[0] -replace 'CN=' } | Where-Object {
+        $_ -ne 'Remote Desktop Users' -and -not ($u.SamAccountName -eq 'Administrator' -and $_ -eq 'Administrators')
+    }) -join ', '
+    if ($groups) { Write-Host "  $($u.SamAccountName) — $groups" -ForegroundColor Yellow }
+}
+
+# ── Step 3: Dry run — privileged group changes ───────────────────────────────
 $toRemove = @()
 $toAdd    = @()
 
@@ -200,37 +229,32 @@ foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Ob
     $allowedGroups = if ($defaultGroupNesting.ContainsKey($groupName)) { $defaultGroupNesting[$groupName] } else { @() }
 
     foreach ($m in $currentMembers) {
-        if ($m.objectClass -eq 'user' -and $m.SamAccountName -notin $allowedUsers) {
-            $toRemove += [PSCustomObject]@{ Group=$groupName; Member=$m.SamAccountName; Type='user'; DN=$m.distinguishedName }
-        }
         if ($m.objectClass -eq 'group' -and $m.SamAccountName -notin $allowedGroups -and $m.Name -notin $allowedGroups) {
             $toRemove += [PSCustomObject]@{ Group=$groupName; Member=$m.Name; Type='group'; DN=$m.distinguishedName }
         }
     }
 
-    # Check if any default members are missing (red team may have removed Administrator from Domain Admins)
-    $currentNames = $currentMembers | ForEach-Object { $_.SamAccountName }
-    foreach ($u in $allowedUsers) {
-        if ($u -notin $currentNames) {
-            $toAdd += [PSCustomObject]@{ Group=$groupName; Member=$u; Type='user' }
-        }
-    }
     $currentGroupNames = $currentMembers | Where-Object { $_.objectClass -eq 'group' } | ForEach-Object { $_.Name }
     foreach ($g in $allowedGroups) {
         if ($g -notin $currentGroupNames) {
             $toAdd += [PSCustomObject]@{ Group=$groupName; Member=$g; Type='group' }
         }
     }
+    $currentNames = $currentMembers | ForEach-Object { $_.SamAccountName }
+    foreach ($u in $allowedUsers) {
+        if ($u -notin $currentNames) {
+            $toAdd += [PSCustomObject]@{ Group=$groupName; Member=$u; Type='user' }
+        }
+    }
 }
 
-Write-Host "`n=== WILL REMOVE ($($toRemove.Count)) ===" -ForegroundColor Red
-foreach ($r in $toRemove) { Write-Host "  [$($r.Type)] $($r.Member) from $($r.Group)" -ForegroundColor Yellow }
+Write-Host "`n=== PHASE 2: PRIVILEGED GROUP CHANGES ===" -ForegroundColor Cyan
+Write-Host "  Groups to fix: $($toRemove.Count) removals, $($toAdd.Count) additions" -ForegroundColor Yellow
+foreach ($r in $toRemove) { Write-Host "  REMOVE [$($r.Type)] $($r.Member) from $($r.Group)" -ForegroundColor Yellow }
+foreach ($a in $toAdd)    { Write-Host "  ADD    [$($a.Type)] $($a.Member) to $($a.Group)" -ForegroundColor Cyan }
 
-Write-Host "`n=== WILL ADD BACK ($($toAdd.Count)) ===" -ForegroundColor Green
-foreach ($a in $toAdd) { Write-Host "  [$($a.Type)] $($a.Member) to $($a.Group)" -ForegroundColor Cyan }
-
-if ($toRemove.Count -eq 0 -and $toAdd.Count -eq 0) {
-    Write-Host "`n[OK] All privileged groups already match defaults." -ForegroundColor Green
+if ($allUsers.Count -eq 0 -and $toRemove.Count -eq 0 -and $toAdd.Count -eq 0) {
+    Write-Host "`n[OK] Everything already matches desired state." -ForegroundColor Green
     return
 }
 
@@ -238,7 +262,29 @@ Write-Host ""
 $confirm = Read-Host "Proceed? (y/n)"
 if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
 
-# ── Step 3: Execute removals ─────────────────────────────────────────────────
+# ── Step 4: Execute strip ────────────────────────────────────────────────────
+$groupMap = @{}
+foreach ($u in $allUsers) {
+    foreach ($g in $u.MemberOf) {
+        $gName = ($g -split ',')[0] -replace 'CN='
+        if ($gName -eq 'Remote Desktop Users') { continue }
+        if (-not $groupMap[$g]) { $groupMap[$g] = @() }; $groupMap[$g] += $u.SamAccountName
+    }
+}
+foreach ($g in @($groupMap.Keys)) {
+    $name = ($g -split ',')[0] -replace 'CN='
+    # Skip built-in groups that won't allow removal of built-in accounts
+    $groupMap[$g] = @($groupMap[$g] | Where-Object { -not ($_ -eq 'Administrator' -and $name -eq 'Administrators') })
+    if ($groupMap[$g].Count -eq 0) { continue }
+    try {
+        Remove-ADGroupMember -Identity $g -Members $groupMap[$g] -Confirm:$false
+        Write-Host "  STRIPPED $name — removed: $($groupMap[$g] -join ', ')" -ForegroundColor Green
+    } catch {
+        Write-Host "  FAILED to strip ${name}: $($_)" -ForegroundColor Red
+    }
+}
+
+# ── Step 5: Execute privileged group removals ────────────────────────────────
 foreach ($r in $toRemove) {
     try {
         Remove-ADGroupMember -Identity $r.Group -Members $r.DN -Confirm:$false
@@ -248,7 +294,7 @@ foreach ($r in $toRemove) {
     }
 }
 
-# ── Step 4: Execute additions (restore missing defaults) ─────────────────────
+# ── Step 6: Execute privileged group additions (rebuild desired state) ───────
 foreach ($a in $toAdd) {
     try {
         Add-ADGroupMember -Identity $a.Group -Members $a.Member -ErrorAction Stop
@@ -258,7 +304,7 @@ foreach ($a in $toAdd) {
     }
 }
 
-Write-Host "`n  Done. Removed $($toRemove.Count), added $($toAdd.Count). Backup: $backupFile" -ForegroundColor Cyan
+Write-Host "`n  Done. Backup: $backupFile" -ForegroundColor Cyan
 ```
 
 **Reset krbtgt twice (DC only)** — kills Golden Tickets. Reset twice because AD keeps current + previous hash. Do this manually through Active Directory Users and Computers: right-click `krbtgt` > Reset Password. Run it **twice** back-to-back. May briefly break Kerberos auth.
@@ -335,7 +381,7 @@ Remove-Item -Path $installerPath -Force
 
 #### Install Wireshark
 ```powershell
-$installerUrl = "https://2.na.dl.wireshark.org/win64/Wireshark-4.6.2-x64.exe"
+$installerUrl = "https://2.na.dl.wireshark.org/win64/Wireshark-4.6.4-x64.exe"
 $installerPath = "wireshark.exe"
 Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
 Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
@@ -2280,6 +2326,64 @@ Write-Host "`n[*] $i executables blocked via Software Restriction Policy" -Foreg
 <details>
 <summary>Useful Commands Cheat Sheet</summary>
 
+#### Restore AD group memberships from backup (exact state)
+```powershell
+$backupFile = Read-Host "Full path to backup CSV (e.g. C:\ad-groups-backup-20260305-120000.csv)"
+if (-not (Test-Path $backupFile)) { Write-Host "  File not found: $backupFile" -ForegroundColor Red; return }
+$rows = Import-Csv -Path $backupFile
+
+# Build desired state per group from CSV
+$desiredState = @{}
+foreach ($r in $rows) {
+    if (-not $desiredState[$r.Group]) { $desiredState[$r.Group] = @() }
+    $desiredState[$r.Group] += $r
+}
+
+# For each group in the backup, remove members not in CSV, add members missing from current
+foreach ($groupName in @($desiredState.Keys)) {
+    try { $currentMembers = @(Get-ADGroupMember -Identity $groupName -ErrorAction Stop) } catch { continue }
+    $desiredDNs = $desiredState[$groupName] | ForEach-Object { $_.MemberDN }
+    $desiredNames = $desiredState[$groupName] | ForEach-Object { $_.Member }
+
+    # Remove members not in backup (skip special principals with no DN)
+    foreach ($m in $currentMembers) {
+        if (-not $m.distinguishedName) { continue }
+        if ($m.distinguishedName -notin $desiredDNs) {
+            if ($m.SamAccountName -eq 'Administrator' -and $groupName -eq 'Administrators') { continue }
+            try {
+                Remove-ADGroupMember -Identity $groupName -Members $m.distinguishedName -Confirm:$false
+                Write-Host "  REMOVED $($m.SamAccountName) from $groupName" -ForegroundColor Yellow
+            } catch {
+                Write-Host "  FAILED to remove $($m.SamAccountName) from ${groupName}: $($_)" -ForegroundColor Red
+            }
+        }
+    }
+
+    # Add members from backup that are missing (skip entries with no DN)
+    $currentDNs = $currentMembers | ForEach-Object { $_.distinguishedName }
+    foreach ($r in $desiredState[$groupName]) {
+        if (-not $r.MemberDN) { continue }
+        if ($r.MemberDN -notin $currentDNs) {
+            try {
+                Add-ADGroupMember -Identity $groupName -Members $r.MemberDN -ErrorAction Stop
+                Write-Host "  ADDED $($r.Member) to $groupName" -ForegroundColor Green
+            } catch {
+                Write-Host "  FAILED to add $($r.Member) to ${groupName}: $($_)" -ForegroundColor Red
+            }
+        }
+    }
+}
+Write-Host "`nRestore complete." -ForegroundColor Cyan
+```
+
+#### Disable/Enable AD Accounts
+```powershell
+# Disable
+"Guest","Administrator" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
+# Enable
+"Guest","Administrator" | ForEach-Object { Enable-ADAccount -Identity $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
+```
+
 #### Disable WinRM (kill sessions, stop, block firewall, prevent startup)
 ```powershell
 Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue | ForEach-Object { Remove-WSManInstance -ResourceURI shell -SelectorSet @{ShellId=$_.ShellId} }
@@ -2361,6 +2465,22 @@ Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service WinRM -ErrorAction SilentlyContinue
 Write-Host "[+] WinRM enabled and started" -ForegroundColor Green
 ```
+
+#### SSH Tunnel (port forward through a jump box)
+Forward a port from a remote internal machine through an SSH jump box to your local machine. Useful for RDP-ing into machines you can't reach directly.
+```
+ssh -L LOCAL_PORT:TARGET_IP:TARGET_PORT USER@JUMP_HOST
+```
+- `LOCAL_PORT` — port on your machine to connect to (e.g. `23456`)
+- `TARGET_IP` — internal machine you want to reach (e.g. `10.0.1.52`)
+- `TARGET_PORT` — service port on the target (e.g. `3389` for RDP)
+- `USER@JUMP_HOST` — SSH credentials for the jump box (e.g. `blueteam@192.168.4.171`)
+
+Example — RDP to `10.0.1.52` through jump box `192.168.4.171`:
+```
+ssh -L 23456:10.0.1.52:3389 blueteam@192.168.4.171
+```
+Then open Remote Desktop and connect to `localhost:23456`.
 
 </details>
 
