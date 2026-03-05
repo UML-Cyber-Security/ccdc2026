@@ -70,29 +70,14 @@ Get-ChildItem "$dest\*.exe" | ForEach-Object {
         -Name $_.FullName -Value "~ RUNASADMIN" -ErrorAction SilentlyContinue
 }
 
-# Install Sysmon with config
-@'
-<Sysmon schemaversion="4.50">
-  <EventFiltering>
-    <ProcessCreate onmatch="exclude" />
-    <NetworkConnect onmatch="exclude" />
-    <FileCreate onmatch="include">
-      <TargetFilename condition="end with">.exe</TargetFilename>
-      <TargetFilename condition="end with">.dll</TargetFilename>
-      <TargetFilename condition="end with">.sys</TargetFilename>
-      <TargetFilename condition="end with">.scr</TargetFilename>
-      <TargetFilename condition="end with">.ps1</TargetFilename>
-      <TargetFilename condition="end with">.bat</TargetFilename>
-      <TargetFilename condition="end with">.cmd</TargetFilename>
-      <TargetFilename condition="end with">.vbs</TargetFilename>
-      <TargetFilename condition="end with">.js</TargetFilename>
-      <TargetFilename condition="end with">.wsf</TargetFilename>
-      <TargetFilename condition="end with">.hta</TargetFilename>
-      <TargetFilename condition="end with">.msi</TargetFilename>
-    </FileCreate>
-  </EventFiltering>
-</Sysmon>
-'@ | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
+# Install Sysmon with config (XML built via string to keep markdown rendering clean)
+$exts = '.exe','.dll','.sys','.scr','.ps1','.bat','.cmd','.vbs','.js','.wsf','.hta','.msi'
+$lines = @('<Sysmon schemaversion="4.50">','  <EventFiltering>',
+    '    <ProcessCreate onmatch="exclude" />','    <NetworkConnect onmatch="exclude" />',
+    '    <FileCreate onmatch="include">')
+$exts | ForEach-Object { $lines += "      <TargetFilename condition=`"end with`">$_</TargetFilename>" }
+$lines += '    </FileCreate>','  </EventFiltering>','</Sysmon>'
+($lines -join "`r`n") | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
 Write-Host "[*] Installing Sysmon..." -ForegroundColor Cyan
 cmd /c "`"$dest\Sysmon64.exe`" -accepteula -i `"$env:TEMP\sc.xml`" >nul 2>&1"
 
@@ -320,7 +305,7 @@ Write-Host ""
 #### Kick a specific RDP session
 Use session ID from `qwinsta` output above:
 ```powershell
-logoff <SESSION_ID>
+logoff SESSION_ID
 ```
 
 #### Disable SSH (kill sessions, stop, block firewall, prevent startup)
@@ -374,36 +359,8 @@ Get-NetFirewallProfile | Format-Table Name, Enabled -AutoSize
 <details>
 <summary><b>5. Harden GPO (DC only)</b> — Domain-wide audit, password, encryption, Defender hardening</summary>
 Hardens domain-wide: audit logging (tuned for WinStride/Sysmon), password policy (NIST 800-63B), SMB signing, disable SMB1, LLMNR, NBT-NS, WPAD, credential protection, Windows Defender, and more. Verifies every setting after apply. Copy-paste the script below into a DC PowerShell session.
+
 ```powershell
-<#
-.SYNOPSIS
-    Domain GPO hardening script. Run once on the DC; settings propagate domain-wide.
-
-.DESCRIPTION
-    Replaces the old enforce-gpo Ansible role. Creates a "Hardening" GPO (or custom name)
-    linked to the domain root, then applies audit, password, encryption, credential-protection,
-    network-hardening, and Windows Defender enablement settings through that GPO.
-
-.EXAMPLE
-    # Full hardening (reset + everything)
-    powershell -ExecutionPolicy Bypass -File Harden-GPO.ps1
-
-    # Everything WITHOUT resetting GPOs
-    powershell -ExecutionPolicy Bypass -File Harden-GPO.ps1 -SkipReset
-
-    # Just audit + encryption
-    powershell -ExecutionPolicy Bypass -File Harden-GPO.ps1 -AuditPolicy -Encryption
-
-    # Just reset (no hardening)
-    powershell -ExecutionPolicy Bypass -File Harden-GPO.ps1 -Reset
-
-    # Safe mode - won't break standard services
-    powershell -ExecutionPolicy Bypass -File Harden-GPO.ps1 -S
-
-    # Super-safe mode - guaranteed zero breakage (logging + passwords only)
-    powershell -ExecutionPolicy Bypass -File Harden-GPO.ps1 -SS
-#>
-
 param(
     [switch]$All,              # Run everything (default if no flags)
     [switch]$Reset,            # dcgpofix /target:both
@@ -1164,6 +1121,8 @@ Write-Host ""
 # ── Phase 1: Fix red team sabotage that prevents Defender from starting ──────
 
 # 1a. Reset ACLs on Defender service keys (red team often locks these out)
+# Strategy: try gentle Get-Acl first (preserves existing ACEs like TrustedInstaller),
+# fall back to nuclear New-Object only if red team locked us out completely.
 $svcKeys = @(
     "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend",
     "HKLM:\SYSTEM\CurrentControlSet\Services\WdNisSvc",
@@ -1173,57 +1132,354 @@ $svcKeys = @(
     "HKLM:\SYSTEM\CurrentControlSet\Services\SecurityHealthService",
     "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"
 )
-foreach ($key in $svcKeys) {
-    if (Test-Path $key) {
+
+# Helper: build the "nuclear" ACL that matches Windows defaults for service keys
+function New-DefenderServiceAcl {
+    $acl = New-Object System.Security.AccessControl.RegistrySecurity
+    # Not protected — inherits from parent (HKLM:\SYSTEM\CurrentControlSet\Services)
+    $acl.SetAccessRuleProtection($false, $true)
+    # Owner = SYSTEM (matches default)
+    $acl.SetOwner([System.Security.Principal.NTAccount]"NT AUTHORITY\SYSTEM")
+
+    $rules = @(
+        # SYSTEM — FullControl (default)
+        @("NT AUTHORITY\SYSTEM",          "FullControl",
+          "ContainerInherit,ObjectInherit", "None", "Allow"),
+        # Administrators — FullControl (default)
+        @("BUILTIN\Administrators",       "FullControl",
+          "ContainerInherit,ObjectInherit", "None", "Allow"),
+        # TrustedInstaller — FullControl (default — owns these keys, needed for servicing)
+        @("NT SERVICE\TrustedInstaller",  "FullControl",
+          "ContainerInherit,ObjectInherit", "None", "Allow"),
+        # CREATOR OWNER — FullControl on subkeys only (standard default)
+        @("CREATOR OWNER",                "FullControl",
+          "ContainerInherit,ObjectInherit", "InheritOnly", "Allow"),
+        # Users — Read (standard default)
+        @("BUILTIN\Users",                "ReadKey",
+          "ContainerInherit,ObjectInherit", "None", "Allow"),
+        # ALL APPLICATION PACKAGES — Read (default, needed for AppContainer sandboxes)
+        @("APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES", "ReadKey",
+          "ContainerInherit,ObjectInherit", "None", "Allow"),
+        # ALL RESTRICTED APP PACKAGES — Read (default on RS3+, safe no-op on older)
+        @("APPLICATION PACKAGE AUTHORITY\ALL RESTRICTED APPLICATION PACKAGES", "ReadKey",
+          "ContainerInherit,ObjectInherit", "None", "Allow")
+    )
+    foreach ($r in $rules) {
         try {
-            $acl = New-Object System.Security.AccessControl.RegistrySecurity
-            $acl.SetAccessRuleProtection($false, $true)
-            $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
-                "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-            $acl.AddAccessRule($rule)
-            $rule2 = New-Object System.Security.AccessControl.RegistryAccessRule(
-                "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-            $acl.AddAccessRule($rule2)
-            Set-Acl -Path $key -AclObject $acl -ErrorAction Stop
-            Write-Host "[+] Reset ACLs on $key" -ForegroundColor Green
+            $ace = New-Object System.Security.AccessControl.RegistryAccessRule(
+                $r[0], $r[1], $r[2], $r[3], $r[4])
+            $acl.AddAccessRule($ace)
         } catch {
-            Write-Host "[-] Could not reset ACLs on $key — $($_.Exception.Message)" -ForegroundColor Yellow
+            # ALL RESTRICTED APPLICATION PACKAGES may not exist on Server 2012 R2; skip safely
+            Write-Host "    [i] Skipped ACE for $($r[0]) (SID not found on this OS)" -ForegroundColor DarkGray
+        }
+    }
+    return $acl
+}
+
+foreach ($key in $svcKeys) {
+    if (-not (Test-Path $key)) { continue }
+    $keyName = ($key -split '\\')[-1]
+
+    # ── Attempt 1: Gentle — read existing ACL, add SYSTEM+Admins if missing ──
+    $gentle = $false
+    try {
+        $acl = Get-Acl -Path $key -ErrorAction Stop
+
+        # Ensure inheritance is enabled (red team may have disabled it)
+        if ($acl.AreAccessRulesProtected) {
+            $acl.SetAccessRuleProtection($false, $true)
+            Write-Host "    [~] $keyName : re-enabled ACL inheritance" -ForegroundColor Cyan
+        }
+
+        # Add SYSTEM FullControl if missing
+        $hasSystem = $acl.Access | Where-Object {
+            $_.IdentityReference -eq "NT AUTHORITY\SYSTEM" -and
+            $_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::FullControl }
+        if (-not $hasSystem) {
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule(
+                "NT AUTHORITY\SYSTEM","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
+            Write-Host "    [~] $keyName : added SYSTEM FullControl" -ForegroundColor Cyan
+        }
+
+        # Add Administrators FullControl if missing
+        $hasAdmin = $acl.Access | Where-Object {
+            $_.IdentityReference -eq "BUILTIN\Administrators" -and
+            $_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::FullControl }
+        if (-not $hasAdmin) {
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule(
+                "BUILTIN\Administrators","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
+            Write-Host "    [~] $keyName : added Administrators FullControl" -ForegroundColor Cyan
+        }
+
+        # Add TrustedInstaller FullControl if missing
+        $hasTI = $acl.Access | Where-Object {
+            $_.IdentityReference -eq "NT SERVICE\TrustedInstaller" -and
+            $_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::FullControl }
+        if (-not $hasTI) {
+            try {
+                $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule(
+                    "NT SERVICE\TrustedInstaller","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
+                Write-Host "    [~] $keyName : added TrustedInstaller FullControl" -ForegroundColor Cyan
+            } catch { }  # TI SID resolution may fail on some editions
+        }
+
+        # Remove any explicit Deny rules (red team plants these to block SYSTEM/Admins)
+        $denyRules = $acl.Access | Where-Object { $_.AccessControlType -eq 'Deny' }
+        foreach ($deny in $denyRules) {
+            $acl.RemoveAccessRule($deny) | Out-Null
+            Write-Host "    [!] $keyName : removed Deny rule for $($deny.IdentityReference)" -ForegroundColor Yellow
+        }
+
+        Set-Acl -Path $key -AclObject $acl -ErrorAction Stop
+        $gentle = $true
+        Write-Host "[+] $keyName — ACL verified/repaired (gentle)" -ForegroundColor Green
+
+    } catch {
+        Write-Host "[-] $keyName — Get-Acl failed ($($_.Exception.Message)), trying nuclear reset..." -ForegroundColor Yellow
+    }
+
+    # ── Attempt 2: Nuclear — red team locked ACL so hard we can't read it ──
+    if (-not $gentle) {
+        try {
+            # Take ownership first (required if even Administrators have no access)
+            $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+                ($key -replace '^HKLM:\\','').Replace('\','\'),
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                [System.Security.AccessControl.RegistryRights]::TakeOwnership)
+            if ($regKey) {
+                $blank = New-Object System.Security.AccessControl.RegistrySecurity
+                $blank.SetOwner([System.Security.Principal.NTAccount]"BUILTIN\Administrators")
+                $regKey.SetAccessControl($blank)
+                $regKey.Close()
+            }
+
+            # Now re-open with ChangePermissions and apply full default ACL
+            $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+                ($key -replace '^HKLM:\\','').Replace('\','\'),
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                [System.Security.AccessControl.RegistryRights]::ChangePermissions)
+            if ($regKey) {
+                $nuclearAcl = New-DefenderServiceAcl
+                $regKey.SetAccessControl($nuclearAcl)
+                $regKey.Close()
+                Write-Host "[+] $keyName — ACL rebuilt from scratch (nuclear)" -ForegroundColor Green
+            } else {
+                Write-Host "[X] $keyName — could not open key even for TakeOwnership" -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "[X] $keyName — nuclear ACL reset failed: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
 }
 
 # 1b. Re-enable Defender drivers red team may have disabled (Start=4 means disabled)
+# SAFETY: A corrupt/missing boot-start driver (Start=0) = BSOD on reboot.
+# We verify binary existence + Microsoft Authenticode signature before touching Start values.
 $drivers = @{ "WdFilter" = 0; "WdNisDrv" = 3; "WdBoot" = 0 }
 foreach ($drv in $drivers.GetEnumerator()) {
-    $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$($drv.Key)"
-    if (Test-Path $path) {
-        $cur = (Get-ItemProperty $path -Name Start -ErrorAction SilentlyContinue).Start
-        if ($cur -eq 4) {
-            Set-ItemProperty $path -Name Start -Value $drv.Value
-            Write-Host "[+] Re-enabled driver $($drv.Key) (was disabled — REBOOT NEEDED)" -ForegroundColor Green
+    $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$($drv.Key)"
+
+    if (-not (Test-Path $svcPath)) {
+        Write-Host "  [i] $($drv.Key) service key missing — skipping" -ForegroundColor Gray
+        continue
+    }
+
+    $curStart = (Get-ItemProperty $svcPath -Name Start -ErrorAction SilentlyContinue).Start
+    if ($curStart -ne 4) {
+        Write-Host "  [i] $($drv.Key) Start=$curStart (not disabled) — no change needed" -ForegroundColor Gray
+        continue
+    }
+
+    # Resolve driver binary path from ImagePath registry value
+    $rawImagePath = (Get-ItemProperty $svcPath -Name ImagePath -ErrorAction SilentlyContinue).ImagePath
+    if (-not $rawImagePath) {
+        Write-Host "  [X] $($drv.Key) has no ImagePath — SKIPPING (cannot verify binary)" -ForegroundColor Red
+        Write-Host "      ACTION: Manually inspect HKLM\SYSTEM\CurrentControlSet\Services\$($drv.Key)" -ForegroundColor Red
+        continue
+    }
+    $binaryPath = $rawImagePath -replace '(?i)^\\SystemRoot\\', "$env:SystemRoot\"
+    $binaryPath = $binaryPath -replace '(?i)^system32\\', "$env:SystemRoot\System32\"
+    $binaryPath = $binaryPath -replace '(?i)^\\\?\?\\', ''
+    if ($binaryPath -match '^"([^"]+)"') { $binaryPath = $Matches[1] }
+
+    # Check binary exists
+    if (-not (Test-Path $binaryPath)) {
+        Write-Host "  [X] $($drv.Key) BINARY MISSING: $binaryPath" -ForegroundColor Red
+        Write-Host "      DANGER: Re-enabling would cause BSOD on reboot!" -ForegroundColor Red
+        Write-Host "      ACTION: Restore binary (sfc /scannow or DISM), then re-run." -ForegroundColor Red
+        continue
+    }
+
+    # Check Authenticode signature — must be valid AND signed by Microsoft
+    $sig = Get-AuthenticodeSignature -FilePath $binaryPath -ErrorAction SilentlyContinue
+    $sigOk = $false
+    if ($sig -and $sig.Status -eq 'Valid') {
+        if ($sig.SignerCertificate.Subject -match 'O=Microsoft Corporation') {
+            $sigOk = $true
+        } else {
+            Write-Host "  [X] $($drv.Key) signed but NOT by Microsoft: $($sig.SignerCertificate.Subject)" -ForegroundColor Red
+            Write-Host "      DANGER: Binary may have been replaced by attacker." -ForegroundColor Red
+            Write-Host "      ACTION: Investigate and restore from known-good source." -ForegroundColor Red
+            continue
+        }
+    }
+    if (-not $sigOk) {
+        $statusText = if ($sig) { $sig.Status } else { "No signature data" }
+        Write-Host "  [X] $($drv.Key) signature FAILED: $statusText" -ForegroundColor Red
+        Write-Host "      Binary: $binaryPath" -ForegroundColor Red
+        Write-Host "      DANGER: Re-enabling a tampered boot-start driver causes BSOD!" -ForegroundColor Red
+        Write-Host "      ACTION: Restore binary (sfc /scannow or DISM), then re-run." -ForegroundColor Red
+        continue
+    }
+
+    # Sanity: reject suspiciously small files
+    $fileSize = (Get-Item $binaryPath).Length
+    if ($fileSize -lt 1024) {
+        Write-Host "  [X] $($drv.Key) binary is only $fileSize bytes — suspiciously small" -ForegroundColor Red
+        Write-Host "      ACTION: Investigate before re-enabling." -ForegroundColor Red
+        continue
+    }
+
+    # All checks passed — safe to re-enable
+    try {
+        Set-ItemProperty $svcPath -Name Start -Value $drv.Value -ErrorAction Stop
+        Write-Host "[+] Re-enabled $($drv.Key) (Start: 4 -> $($drv.Value)) — binary verified OK" -ForegroundColor Green
+        Write-Host "    Binary: $binaryPath ($fileSize bytes, Microsoft-signed)" -ForegroundColor Green
+        Write-Host "    NOTE: REBOOT REQUIRED for driver changes to take effect." -ForegroundColor Yellow
+    } catch {
+        Write-Host "[X] Failed to set Start value for $($drv.Key): $_" -ForegroundColor Red
+    }
+}
+
+# 1c. Re-enable all Defender-related services (with third-party AV guard)
+$thirdPartyAV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction SilentlyContinue |
+    Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
+$services = @("WinDefend", "WdNisSvc", "SecurityHealthService", "wscsvc")
+if ($thirdPartyAV) {
+    Write-Host "[!] Third-party AV detected — skipping Defender service auto-enable:" -ForegroundColor Yellow
+    $thirdPartyAV | ForEach-Object { Write-Host "      $($_.displayName)" -ForegroundColor Yellow }
+    Write-Host "    Enabling Defender alongside another AV causes driver conflicts and high CPU." -ForegroundColor Yellow
+    Write-Host "    Remove the third-party AV first, then re-run this script." -ForegroundColor Yellow
+} else {
+    foreach ($svc in $services) {
+        $svcObj = Get-Service -Name $svc -ErrorAction SilentlyContinue
+        if (-not $svcObj) {
+            Write-Host "  [-] Service $svc does not exist on this machine — skipped" -ForegroundColor Gray
+            continue
+        }
+        $scOut = sc.exe config $svc start= auto 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [+] $svc set to auto-start" -ForegroundColor Green
+        } else {
+            Write-Host "  [-] Failed to set $svc to auto-start: $scOut" -ForegroundColor Red
         }
     }
 }
 
-# 1c. Re-enable all Defender-related services
-$services = @("WinDefend", "WdNisSvc", "SecurityHealthService", "wscsvc")
-foreach ($svc in $services) { sc.exe config $svc start= auto 2>&1 | Out-Null }
-
 # 1d. Remove local registry keys that disable Defender outside of GPO
+# Detect Tamper Protection state first — if active, direct registry writes are blocked
+$tamperStatus = (Get-MpComputerStatus -ErrorAction SilentlyContinue).IsTamperProtected
+if ($tamperStatus) {
+    Write-Host "  [i] Tamper Protection is ON — registry writes may be blocked (that's good, it means" -ForegroundColor Cyan
+    Write-Host "      Defender is protecting itself). Flags set via policy/MpPreference will still work." -ForegroundColor Cyan
+}
 $disableKeys = @(
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiSpyware" },
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiVirus" },
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring" },
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring" }
 )
+$flagsFound = 0; $flagsCleared = 0; $flagsFailed = 0
 foreach ($entry in $disableKeys) {
-    Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+    $val = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+    if ($null -ne $val -and $val.($entry.Name) -ne $null) {
+        $flagsFound++
+        Write-Host "  [!] Found $($entry.Name) = $($val.($entry.Name)) at $($entry.Path)" -ForegroundColor Yellow
+        try {
+            Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction Stop
+            # Verify removal
+            $check = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+            if ($null -eq $check -or $check.($entry.Name) -eq $null) {
+                $flagsCleared++
+                Write-Host "      Removed successfully" -ForegroundColor Green
+            } else {
+                $flagsFailed++
+                Write-Host "      Remove-ItemProperty returned success but value persists (Tamper Protection?)" -ForegroundColor Red
+            }
+        } catch {
+            $flagsFailed++
+            Write-Host "      Failed to remove: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
 }
-Write-Host "[+] Cleared local registry disable flags" -ForegroundColor Green
+if ($flagsFound -eq 0) {
+    Write-Host "[+] No local disable flags found (clean)" -ForegroundColor Green
+} elseif ($flagsFailed -eq 0) {
+    Write-Host "[+] Cleared $flagsCleared/$flagsFound local disable flags" -ForegroundColor Green
+} else {
+    Write-Host "[-] Cleared $flagsCleared/$flagsFound flags; $flagsFailed failed (Tamper Protection may be blocking — try Set-MpPreference instead)" -ForegroundColor Red
+}
 
-# 1e. Undo ELAM (Early Launch Anti-Malware) disable
-bcdedit /deletevalue "{current}" disableintegritycheck 2>&1 | Out-Null
-bcdedit /set "{current}" integrityservices enable 2>&1 | Out-Null
+# 1e. Boot integrity check (ADVISORY — never auto-change, boot failure risk)
+# If disableintegritycheck is set and unsigned boot drivers exist, removing it = BSOD.
+# We scan, report, and tell the operator what to do — but do NOT change BCD automatically.
+Write-Host "`n--- Boot Integrity Check ---" -ForegroundColor Cyan
+$bcdOutput = bcdedit /enum "{current}" 2>&1 | Out-String
+$integrityDisabled = $bcdOutput -match 'disableintegritychecks\s+Yes'
+$testsigningOn     = $bcdOutput -match 'testsigning\s+Yes'
+
+if ($integrityDisabled) {
+    Write-Host "[!] BOOT INTEGRITY CHECKS ARE DISABLED (disableintegritychecks=Yes)" -ForegroundColor Red
+    Write-Host "    This may be attacker sabotage OR required for unsigned drivers." -ForegroundColor Yellow
+
+    # Scan boot-start drivers for unsigned binaries to help operator decide
+    Write-Host "    Scanning boot-start drivers for unsigned binaries..." -ForegroundColor Yellow
+    $unsignedDrivers = @()
+    Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services" -ErrorAction SilentlyContinue | ForEach-Object {
+        $props = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        if ($props.Start -eq 0 -and $props.Type -eq 1) {  # Boot-start kernel drivers
+            $drvImgPath = $props.ImagePath
+            if (-not $drvImgPath) { return }
+            $resolved = $drvImgPath -replace '(?i)^\\SystemRoot\\', "$env:SystemRoot\"
+            $resolved = $resolved -replace '(?i)^system32\\', "$env:SystemRoot\System32\"
+            $resolved = $resolved -replace '(?i)^\\\?\?\\', ''
+            if (Test-Path $resolved) {
+                $drvSig = Get-AuthenticodeSignature -FilePath $resolved -ErrorAction SilentlyContinue
+                if (-not $drvSig -or $drvSig.Status -ne 'Valid') {
+                    $unsignedDrivers += [PSCustomObject]@{
+                        Name   = $_.PSChildName
+                        Path   = $resolved
+                        Status = if ($drvSig) { $drvSig.Status } else { "NoSignature" }
+                    }
+                }
+            }
+        }
+    }
+
+    if ($unsignedDrivers.Count -gt 0) {
+        Write-Host "    WARNING: Found $($unsignedDrivers.Count) unsigned boot-start driver(s):" -ForegroundColor Red
+        foreach ($ud in $unsignedDrivers) {
+            Write-Host "      - $($ud.Name): $($ud.Path) [$($ud.Status)]" -ForegroundColor Red
+        }
+        Write-Host "    DO NOT remove disableintegritychecks — it WILL cause BSOD!" -ForegroundColor Red
+    } else {
+        Write-Host "    All boot-start drivers appear properly signed." -ForegroundColor Green
+        Write-Host "    To re-enable integrity checks MANUALLY:" -ForegroundColor Yellow
+        Write-Host '      bcdedit /deletevalue "{current}" disableintegritychecks' -ForegroundColor White
+        Write-Host '      bcdedit /set "{current}" integrityservices enable' -ForegroundColor White
+    }
+} else {
+    Write-Host "[+] Boot integrity checks already enabled (good)" -ForegroundColor Green
+}
+
+if ($testsigningOn) {
+    Write-Host "[!] TEST SIGNING IS ENABLED — unsigned drivers can load" -ForegroundColor Red
+    Write-Host "    To disable MANUALLY (only if no test-signed drivers needed):" -ForegroundColor Yellow
+    Write-Host "      bcdedit /set testsigning off" -ForegroundColor White
+} else {
+    Write-Host "[+] Test signing not enabled (good)" -ForegroundColor Green
+}
 
 # ── Phase 2: Pull GPO and start services ─────────────────────────────────────
 gpupdate /force
@@ -1257,8 +1513,22 @@ try {
 
 # ── Phase 3: Nuke ALL exclusions (local prefs + direct registry + policy) ────
 
-# 3a. reg.exe force-clear all exclusion keys (works even with locked ACLs / service down)
-@(
+# 3-pre. LOG all existing exclusions for forensic evidence before removing
+$evidenceFile = "$env:USERPROFILE\Desktop\defender-exclusions-evidence-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
+$evidenceLines = @("=== Defender Exclusion Evidence Log ===", "Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')", "Hostname: $env:COMPUTERNAME", "")
+
+# Log from MpPreference (WMI store)
+$prefsSnap = Get-MpPreference -ErrorAction SilentlyContinue
+if ($prefsSnap) {
+    $evidenceLines += "--- MpPreference Exclusions ---"
+    @("ExclusionPath","ExclusionProcess","ExclusionExtension","ExclusionIpAddress") | ForEach-Object {
+        $vals = @($prefsSnap.$_) | Where-Object { $_ }
+        if ($vals) { $vals | ForEach-Object { $evidenceLines += "  [MpPref] ${_}: $_" } }
+    }
+}
+
+# Log from direct registry (may differ from MpPreference — red team plants here directly)
+$exclusionRegKeys = @(
     "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths",
     "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes",
     "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions",
@@ -1268,17 +1538,81 @@ try {
     "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Processes",
     "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Extensions",
     "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\TemporaryPaths"
-) | ForEach-Object { reg.exe delete $_ /va /f 2>&1 | Out-Null }
-Write-Host "[+] Cleared all exclusion registry keys via reg.exe" -ForegroundColor Green
+)
+$evidenceLines += ""
+$evidenceLines += "--- Registry Exclusions ---"
+foreach ($rk in $exclusionRegKeys) {
+    $vals = reg.exe query $rk 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $evidenceLines += "  [$rk]"
+        $vals | Where-Object { $_ -match 'REG_' } | ForEach-Object { $evidenceLines += "    $_" }
+    }
+}
+$evidenceLines | Out-File -FilePath $evidenceFile -Encoding UTF8
+Write-Host "[+] Exclusion evidence saved to $evidenceFile" -ForegroundColor Cyan
+
+# 3a. reg.exe force-clear all exclusion keys (works even with locked ACLs / service down)
+$regCleared = 0; $regFailed = 0; $regEmpty = 0
+foreach ($rk in $exclusionRegKeys) {
+    # Check if key has values first
+    $queryOut = reg.exe query $rk 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $regEmpty++  # key doesn't exist or no access — nothing to clear
+        continue
+    }
+    $hasValues = $queryOut | Where-Object { $_ -match 'REG_' }
+    if (-not $hasValues) {
+        $regEmpty++  # key exists but has no values
+        continue
+    }
+    $delOut = reg.exe delete $rk /va /f 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $regCleared++
+        $keyShort = ($rk -split '\\')[-1]
+        $parentShort = ($rk -split '\\')[-2]
+        Write-Host "  [+] Cleared $parentShort\$keyShort" -ForegroundColor Green
+    } else {
+        $regFailed++
+        Write-Host "  [-] Failed to clear $rk : $delOut" -ForegroundColor Red
+    }
+}
+if ($regCleared -eq 0 -and $regFailed -eq 0) {
+    Write-Host "[+] No exclusion registry values found (already clean)" -ForegroundColor Green
+} elseif ($regFailed -gt 0) {
+    Write-Host "[-] Registry exclusions: $regCleared cleared, $regFailed failed (Tamper Protection or ACL issue)" -ForegroundColor Red
+} else {
+    Write-Host "[+] Cleared exclusion values from $regCleared registry keys" -ForegroundColor Green
+}
 
 # 3b. Also clean via MpPreference (clears WMI store the cmdlet reads from)
 $prefs = Get-MpPreference -ErrorAction SilentlyContinue
+$mpCleared = 0; $mpFailed = 0
 if ($prefs) {
-    @($prefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionPath $_ -ErrorAction SilentlyContinue }
-    @($prefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ -ErrorAction SilentlyContinue }
-    @($prefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ -ErrorAction SilentlyContinue }
-    @($prefs.ExclusionIpAddress) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionIpAddress $_ -ErrorAction SilentlyContinue }
-    Write-Host "[+] Cleared exclusions via MpPreference" -ForegroundColor Green
+    $exclusionTypes = @(
+        @{ Prop = "ExclusionPath";      Cmd = { param($v) Remove-MpPreference -ExclusionPath $v -ErrorAction Stop } },
+        @{ Prop = "ExclusionProcess";   Cmd = { param($v) Remove-MpPreference -ExclusionProcess $v -ErrorAction Stop } },
+        @{ Prop = "ExclusionExtension"; Cmd = { param($v) Remove-MpPreference -ExclusionExtension $v -ErrorAction Stop } },
+        @{ Prop = "ExclusionIpAddress"; Cmd = { param($v) Remove-MpPreference -ExclusionIpAddress $v -ErrorAction Stop } }
+    )
+    foreach ($et in $exclusionTypes) {
+        @($prefs.($et.Prop)) | Where-Object { $_ } | ForEach-Object {
+            try {
+                & $et.Cmd $_
+                $mpCleared++
+                Write-Host "  [+] Removed $($et.Prop): $_" -ForegroundColor Green
+            } catch {
+                $mpFailed++
+                Write-Host "  [-] Failed to remove $($et.Prop) '$_': $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+}
+if ($mpCleared -eq 0 -and $mpFailed -eq 0) {
+    Write-Host "[+] No MpPreference exclusions found (already clean)" -ForegroundColor Green
+} elseif ($mpFailed -gt 0) {
+    Write-Host "[-] MpPreference exclusions: $mpCleared removed, $mpFailed failed" -ForegroundColor Red
+} else {
+    Write-Host "[+] Removed $mpCleared exclusions via MpPreference" -ForegroundColor Green
 }
 
 # ── Phase 4: Update signatures and scan ──────────────────────────────────────
@@ -1555,7 +1889,7 @@ Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
 
 # Check if WinRM is enabled
 Get-Service WinRM
-Test-WSMan -ComputerName <TARGET_IP>
+Test-WSMan -ComputerName TARGET_IP
 
 # Run on all domain machines at once (run from DC)
 $computers = (Get-ADComputer -Filter {OperatingSystem -like "*Windows*"}).Name
@@ -1565,20 +1899,20 @@ Invoke-Command -ComputerName $computers -Credential $cred -ScriptBlock {
 }
 
 # Check if WinRM is enabled on a remote machine
-Test-WSMan -ComputerName <TARGET_IP>
+Test-WSMan -ComputerName TARGET_IP
 
 # Check with credentials
 $cred = Get-Credential
-Test-WSMan -ComputerName <TARGET_IP> -Authentication Negotiate -Credential $cred
+Test-WSMan -ComputerName TARGET_IP -Authentication Negotiate -Credential $cred
 
 # Open interactive session (like SSH)
-Enter-PSSession -ComputerName <TARGET_IP> -Credential $cred
+Enter-PSSession -ComputerName TARGET_IP -Credential $cred
 
 # Run a single command without a session
-Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock { hostname }
+Invoke-Command -ComputerName TARGET_IP -Credential $cred -ScriptBlock { hostname }
 
 # Run a script file remotely
-Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -FilePath C:\scripts\myscript.ps1
+Invoke-Command -ComputerName TARGET_IP -Credential $cred -FilePath C:\scripts\myscript.ps1
 
 # ── Run on multiple machines at once ──────────────────────────────────────────
 # Hardcoded IPs
@@ -1596,7 +1930,7 @@ Invoke-Command -ComputerName $computers -Credential $cred -ScriptBlock { hostnam
 Invoke-Command -ComputerName $computers -Credential $cred -ThrottleLimit 10 -ScriptBlock { hostname }
 
 # Copy a file to a remote machine
-$s = New-PSSession -ComputerName <TARGET_IP> -Credential $cred
+$s = New-PSSession -ComputerName TARGET_IP -Credential $cred
 Copy-Item -Path C:\local\file.ps1 -Destination C:\remote\file.ps1 -ToSession $s
 Remove-PSSession $s
 
@@ -1865,21 +2199,21 @@ New-NetFirewallRule -DisplayName "WinRM HTTPS" -Direction Inbound -Protocol TCP 
 
 **From another Windows machine:**
 ```powershell
-Test-WSMan -ComputerName <TARGET_IP>
-Test-WSMan -ComputerName <TARGET_IP> -UseSSL -ErrorAction SilentlyContinue
+Test-WSMan -ComputerName TARGET_IP
+Test-WSMan -ComputerName TARGET_IP -UseSSL -ErrorAction SilentlyContinue
 $cred = Get-Credential
-Test-WSMan -ComputerName <TARGET_IP> -Authentication Negotiate -Credential $cred
-Enter-PSSession -ComputerName <TARGET_IP> -Credential $cred
-Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock { hostname }
+Test-WSMan -ComputerName TARGET_IP -Authentication Negotiate -Credential $cred
+Enter-PSSession -ComputerName TARGET_IP -Credential $cred
+Invoke-Command -ComputerName TARGET_IP -Credential $cred -ScriptBlock { hostname }
 ```
 
 **From Linux (Ansible control node):**
 ```bash
-nc -zv <TARGET_IP> 5985
-nc -zv <TARGET_IP> 5986
-ansible <TARGET_IP> -i "<TARGET_IP>," -m win_ping \
-  -e "ansible_user=Administrator ansible_password=<PASS> ansible_connection=winrm ansible_port=5985 ansible_winrm_transport=ntlm ansible_winrm_server_cert_validation=ignore"
-curl -s http://<TARGET_IP>:5985/wsman
+nc -zv TARGET_IP 5985
+nc -zv TARGET_IP 5986
+ansible TARGET_IP -i "TARGET_IP," -m win_ping \
+  -e "ansible_user=Administrator ansible_password=PASS ansible_connection=winrm ansible_port=5985 ansible_winrm_transport=ntlm ansible_winrm_server_cert_validation=ignore"
+curl -s http://TARGET_IP:5985/wsman
 ```
 
 **Bulk test all machines:**
@@ -1913,7 +2247,7 @@ nano inventory/inventory.ini
 Add your Windows machines:
 ```ini
 [windows]
-<IP> ansible_user=Administrator ansible_password=<PASSWORD>
+IP_ADDRESS ansible_user=Administrator ansible_password=PASSWORD
 
 [windows:vars]
 ansible_connection=winrm
@@ -1956,7 +2290,7 @@ ansible-playbook -i inventory/inventory.ini playbook.yml
 
 ```powershell
 # Check if RDP is enabled on a remote machine (port test)
-Test-NetConnection -ComputerName <TARGET_IP> -Port 3389
+Test-NetConnection -ComputerName TARGET_IP -Port 3389
 
 # Bulk check which machines have RDP enabled
 $machines = @("10.0.0.1","10.0.0.2","10.0.0.3")
@@ -1967,14 +2301,14 @@ foreach ($m in $machines) {
 }
 
 # Check RDP settings on a remote machine via WinRM
-Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock {
+Invoke-Command -ComputerName TARGET_IP -Credential $cred -ScriptBlock {
     $rdp = Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections
     if ($rdp.fDenyTSConnections -eq 0) { Write-Host "RDP: ENABLED" -ForegroundColor Green }
     else { Write-Host "RDP: DISABLED" -ForegroundColor Red }
 }
 
 # Enable RDP on a remote machine via WinRM
-Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock {
+Invoke-Command -ComputerName TARGET_IP -Credential $cred -ScriptBlock {
     Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
     Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
     Write-Host "[+] RDP enabled" -ForegroundColor Green
@@ -2081,7 +2415,7 @@ Write-Host ""
 
 # ── Fix sabotage ─────────────────────────────────────────────────────────────
 
-# Reset ACLs on Defender service keys
+# Reset ACLs on Defender service keys (gentle-first, nuclear fallback)
 $svcKeys = @(
     "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend",
     "HKLM:\SYSTEM\CurrentControlSet\Services\WdNisSvc",
@@ -2091,51 +2425,167 @@ $svcKeys = @(
     "HKLM:\SYSTEM\CurrentControlSet\Services\SecurityHealthService",
     "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"
 )
+function New-DefenderServiceAcl {
+    $a = New-Object System.Security.AccessControl.RegistrySecurity
+    $a.SetAccessRuleProtection($false, $true)
+    $a.SetOwner([System.Security.Principal.NTAccount]"NT AUTHORITY\SYSTEM")
+    @(
+        @("NT AUTHORITY\SYSTEM",          "FullControl","ContainerInherit,ObjectInherit","None","Allow"),
+        @("BUILTIN\Administrators",       "FullControl","ContainerInherit,ObjectInherit","None","Allow"),
+        @("NT SERVICE\TrustedInstaller",  "FullControl","ContainerInherit,ObjectInherit","None","Allow"),
+        @("CREATOR OWNER",                "FullControl","ContainerInherit,ObjectInherit","InheritOnly","Allow"),
+        @("BUILTIN\Users",                "ReadKey",    "ContainerInherit,ObjectInherit","None","Allow"),
+        @("APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES","ReadKey","ContainerInherit,ObjectInherit","None","Allow"),
+        @("APPLICATION PACKAGE AUTHORITY\ALL RESTRICTED APPLICATION PACKAGES","ReadKey","ContainerInherit,ObjectInherit","None","Allow")
+    ) | ForEach-Object {
+        try { $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule($_[0],$_[1],$_[2],$_[3],$_[4]))) } catch {}
+    }
+    return $a
+}
 foreach ($key in $svcKeys) {
-    if (Test-Path $key) {
+    if (-not (Test-Path $key)) { continue }
+    $kn = ($key -split '\\')[-1]; $gentle = $false
+    try {
+        $acl = Get-Acl -Path $key -ErrorAction Stop
+        if ($acl.AreAccessRulesProtected) { $acl.SetAccessRuleProtection($false, $true) }
+        foreach ($id in @("NT AUTHORITY\SYSTEM","BUILTIN\Administrators")) {
+            if (-not ($acl.Access | Where-Object { $_.IdentityReference -eq $id -and $_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::FullControl })) {
+                $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule($id,"FullControl","ContainerInherit,ObjectInherit","None","Allow")))
+            }
+        }
+        $acl.Access | Where-Object { $_.AccessControlType -eq 'Deny' } | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+        Set-Acl -Path $key -AclObject $acl -ErrorAction Stop; $gentle = $true
+    } catch {}
+    if (-not $gentle) {
         try {
-            $acl = New-Object System.Security.AccessControl.RegistrySecurity
-            $acl.SetAccessRuleProtection($false, $true)
-            $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
-                "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-            $acl.AddAccessRule($rule)
-            $rule2 = New-Object System.Security.AccessControl.RegistryAccessRule(
-                "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-            $acl.AddAccessRule($rule2)
-            Set-Acl -Path $key -AclObject $acl -ErrorAction Stop
+            $rk = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(($key -replace '^HKLM:\\','').Replace('\','\'),
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,[System.Security.AccessControl.RegistryRights]::TakeOwnership)
+            if ($rk) { $b = New-Object System.Security.AccessControl.RegistrySecurity; $b.SetOwner([System.Security.Principal.NTAccount]"BUILTIN\Administrators"); $rk.SetAccessControl($b); $rk.Close() }
+            $rk = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(($key -replace '^HKLM:\\','').Replace('\','\'),
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,[System.Security.AccessControl.RegistryRights]::ChangePermissions)
+            if ($rk) { $rk.SetAccessControl((New-DefenderServiceAcl)); $rk.Close() }
         } catch {}
     }
 }
 
-# Re-enable Defender drivers
+# Re-enable Defender drivers (safe — verify binary + Microsoft signature first)
 $drivers = @{ "WdFilter" = 0; "WdNisDrv" = 3; "WdBoot" = 0 }
 foreach ($drv in $drivers.GetEnumerator()) {
-    $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$($drv.Key)"
-    if (Test-Path $path) {
-        $cur = (Get-ItemProperty $path -Name Start -ErrorAction SilentlyContinue).Start
-        if ($cur -eq 4) { Set-ItemProperty $path -Name Start -Value $drv.Value }
+    $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$($drv.Key)"
+    if (-not (Test-Path $svcPath)) { continue }
+    $curStart = (Get-ItemProperty $svcPath -Name Start -ErrorAction SilentlyContinue).Start
+    if ($curStart -ne 4) { continue }
+
+    $rawImagePath = (Get-ItemProperty $svcPath -Name ImagePath -ErrorAction SilentlyContinue).ImagePath
+    if (-not $rawImagePath) {
+        Write-Host "  [X] $($drv.Key) has no ImagePath — SKIPPING" -ForegroundColor Red; continue
+    }
+    $bp = $rawImagePath -replace '(?i)^\\SystemRoot\\', "$env:SystemRoot\"
+    $bp = $bp -replace '(?i)^system32\\', "$env:SystemRoot\System32\"
+    $bp = $bp -replace '(?i)^\\\?\?\\', ''
+    if ($bp -match '^"([^"]+)"') { $bp = $Matches[1] }
+
+    if (-not (Test-Path $bp)) {
+        Write-Host "  [X] $($drv.Key) BINARY MISSING: $bp — BSOD risk, skipping" -ForegroundColor Red; continue
+    }
+    $sig = Get-AuthenticodeSignature -FilePath $bp -ErrorAction SilentlyContinue
+    if (-not $sig -or $sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        Write-Host "  [X] $($drv.Key) signature invalid — skipping (possible tampering)" -ForegroundColor Red; continue
+    }
+    if ((Get-Item $bp).Length -lt 1024) {
+        Write-Host "  [X] $($drv.Key) binary suspiciously small — skipping" -ForegroundColor Red; continue
+    }
+
+    try {
+        Set-ItemProperty $svcPath -Name Start -Value $drv.Value -ErrorAction Stop
+        Write-Host "[+] Re-enabled $($drv.Key) (verified Microsoft-signed) — REBOOT NEEDED" -ForegroundColor Green
+    } catch {
+        Write-Host "[X] Failed to re-enable $($drv.Key): $_" -ForegroundColor Red
     }
 }
 
-# Set services to auto-start
+# Set services to auto-start (with third-party AV guard)
+$thirdPartyAV = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction SilentlyContinue |
+    Where-Object { $_.displayName -notmatch 'Windows Defender|Microsoft Defender' }
 $services = @("WinDefend", "WdNisSvc", "SecurityHealthService", "wscsvc")
-foreach ($svc in $services) { sc.exe config $svc start= auto 2>&1 | Out-Null }
+if ($thirdPartyAV) {
+    Write-Host "[!] Third-party AV detected — skipping Defender service auto-enable:" -ForegroundColor Yellow
+    $thirdPartyAV | ForEach-Object { Write-Host "      $($_.displayName)" -ForegroundColor Yellow }
+    Write-Host "    Enabling Defender alongside another AV causes driver conflicts and high CPU." -ForegroundColor Yellow
+    Write-Host "    Remove the third-party AV first, then re-run this script." -ForegroundColor Yellow
+} else {
+    foreach ($svc in $services) {
+        $svcObj = Get-Service -Name $svc -ErrorAction SilentlyContinue
+        if (-not $svcObj) {
+            Write-Host "  [-] Service $svc does not exist on this machine — skipped" -ForegroundColor Gray
+            continue
+        }
+        $scOut = sc.exe config $svc start= auto 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [+] $svc set to auto-start" -ForegroundColor Green
+        } else {
+            Write-Host "  [-] Failed to set $svc to auto-start: $scOut" -ForegroundColor Red
+        }
+    }
+}
 
-# Fix ELAM
-bcdedit /deletevalue "{current}" disableintegritycheck 2>&1 | Out-Null
-bcdedit /set "{current}" integrityservices enable 2>&1 | Out-Null
+# Boot integrity check (advisory only — never auto-change, boot failure risk)
+$bcdOut = bcdedit /enum "{current}" 2>&1 | Out-String
+if ($bcdOut -match 'disableintegritychecks\s+Yes') {
+    Write-Host "[!] Boot integrity checks DISABLED — may be attacker or required for unsigned drivers" -ForegroundColor Red
+    Write-Host "    Check boot-start drivers before fixing. Manual commands if safe:" -ForegroundColor Yellow
+    Write-Host '      bcdedit /deletevalue "{current}" disableintegritychecks' -ForegroundColor White
+    Write-Host '      bcdedit /set "{current}" integrityservices enable' -ForegroundColor White
+} else {
+    Write-Host "[+] Boot integrity checks enabled (good)" -ForegroundColor Green
+}
+if ($bcdOut -match 'testsigning\s+Yes') {
+    Write-Host "[!] Test signing enabled — unsigned drivers can load" -ForegroundColor Red
+    Write-Host "    Manual fix: bcdedit /set testsigning off" -ForegroundColor Yellow
+}
 
 # ── Enable Defender locally (replaces what GPO would do) ─────────────────────
 
-# Remove local disable keys
+# Remove local disable keys (with Tamper Protection awareness and per-flag reporting)
+$tamperStatus = (Get-MpComputerStatus -ErrorAction SilentlyContinue).IsTamperProtected
+if ($tamperStatus) {
+    Write-Host "  [i] Tamper Protection is ON — registry writes may be blocked (that's good, it means" -ForegroundColor Cyan
+    Write-Host "      Defender is protecting itself). Flags set via policy/MpPreference will still work." -ForegroundColor Cyan
+}
 $disableKeys = @(
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiSpyware" },
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiVirus" },
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring" },
     @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring" }
 )
+$flagsFound = 0; $flagsCleared = 0; $flagsFailed = 0
 foreach ($entry in $disableKeys) {
-    Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+    $val = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+    if ($null -ne $val -and $val.($entry.Name) -ne $null) {
+        $flagsFound++
+        Write-Host "  [!] Found $($entry.Name) = $($val.($entry.Name)) at $($entry.Path)" -ForegroundColor Yellow
+        try {
+            Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction Stop
+            $check = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+            if ($null -eq $check -or $check.($entry.Name) -eq $null) {
+                $flagsCleared++
+                Write-Host "      Removed successfully" -ForegroundColor Green
+            } else {
+                $flagsFailed++
+                Write-Host "      Remove-ItemProperty returned success but value persists (Tamper Protection?)" -ForegroundColor Red
+            }
+        } catch {
+            $flagsFailed++
+            Write-Host "      Failed to remove: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+}
+if ($flagsFound -eq 0) {
+    Write-Host "[+] No local disable flags found (clean)" -ForegroundColor Green
+} elseif ($flagsFailed -eq 0) {
+    Write-Host "[+] Cleared $flagsCleared/$flagsFound local disable flags" -ForegroundColor Green
+} else {
+    Write-Host "[-] Cleared $flagsCleared/$flagsFound flags; $flagsFailed failed (Tamper Protection may be blocking)" -ForegroundColor Red
 }
 
 # Set policy-level registry keys to enable Defender (what GPO normally does)
@@ -2186,10 +2636,22 @@ try {
     Write-Host "[!] ASR LSASS rule failed (Defender may not be fully functional yet): $_" -ForegroundColor Yellow
 }
 
-# ── Nuke exclusions ──────────────────────────────────────────────────────────
+# ── Nuke exclusions (with forensic logging and accurate reporting) ───────────
 
-# reg.exe force-clear all exclusion keys (works even with locked ACLs / service down)
-@(
+# Log all existing exclusions for forensic evidence before removing
+$evidenceFile = "$env:USERPROFILE\Desktop\defender-exclusions-evidence-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
+$evidenceLines = @("=== Defender Exclusion Evidence Log ===", "Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')", "Hostname: $env:COMPUTERNAME", "")
+
+$prefsSnap = Get-MpPreference -ErrorAction SilentlyContinue
+if ($prefsSnap) {
+    $evidenceLines += "--- MpPreference Exclusions ---"
+    @("ExclusionPath","ExclusionProcess","ExclusionExtension","ExclusionIpAddress") | ForEach-Object {
+        $vals = @($prefsSnap.$_) | Where-Object { $_ }
+        if ($vals) { $vals | ForEach-Object { $evidenceLines += "  [MpPref] ${_}: $_" } }
+    }
+}
+
+$exclusionRegKeys = @(
     "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths",
     "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes",
     "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions",
@@ -2199,17 +2661,74 @@ try {
     "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Processes",
     "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Extensions",
     "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\TemporaryPaths"
-) | ForEach-Object { reg.exe delete $_ /va /f 2>&1 | Out-Null }
-Write-Host "[+] Cleared all exclusion registry keys via reg.exe" -ForegroundColor Green
+)
+$evidenceLines += ""
+$evidenceLines += "--- Registry Exclusions ---"
+foreach ($rk in $exclusionRegKeys) {
+    $vals = reg.exe query $rk 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $evidenceLines += "  [$rk]"
+        $vals | Where-Object { $_ -match 'REG_' } | ForEach-Object { $evidenceLines += "    $_" }
+    }
+}
+$evidenceLines | Out-File -FilePath $evidenceFile -Encoding UTF8
+Write-Host "[+] Exclusion evidence saved to $evidenceFile" -ForegroundColor Cyan
+
+# reg.exe force-clear all exclusion keys (works even with locked ACLs / service down)
+$regCleared = 0; $regFailed = 0; $regEmpty = 0
+foreach ($rk in $exclusionRegKeys) {
+    $queryOut = reg.exe query $rk 2>&1
+    if ($LASTEXITCODE -ne 0) { $regEmpty++; continue }
+    $hasValues = $queryOut | Where-Object { $_ -match 'REG_' }
+    if (-not $hasValues) { $regEmpty++; continue }
+    $delOut = reg.exe delete $rk /va /f 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $regCleared++
+        $keyShort = ($rk -split '\\')[-1]
+        $parentShort = ($rk -split '\\')[-2]
+        Write-Host "  [+] Cleared $parentShort\$keyShort" -ForegroundColor Green
+    } else {
+        $regFailed++
+        Write-Host "  [-] Failed to clear $rk : $delOut" -ForegroundColor Red
+    }
+}
+if ($regCleared -eq 0 -and $regFailed -eq 0) {
+    Write-Host "[+] No exclusion registry values found (already clean)" -ForegroundColor Green
+} elseif ($regFailed -gt 0) {
+    Write-Host "[-] Registry exclusions: $regCleared cleared, $regFailed failed (Tamper Protection or ACL issue)" -ForegroundColor Red
+} else {
+    Write-Host "[+] Cleared exclusion values from $regCleared registry keys" -ForegroundColor Green
+}
 
 # Also clean via MpPreference (clears WMI store the cmdlet reads from)
 $prefs = Get-MpPreference -ErrorAction SilentlyContinue
+$mpCleared = 0; $mpFailed = 0
 if ($prefs) {
-    @($prefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionPath $_ -ErrorAction SilentlyContinue }
-    @($prefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ -ErrorAction SilentlyContinue }
-    @($prefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ -ErrorAction SilentlyContinue }
-    @($prefs.ExclusionIpAddress) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionIpAddress $_ -ErrorAction SilentlyContinue }
-    Write-Host "[+] Cleared exclusions via MpPreference" -ForegroundColor Green
+    $exclusionTypes = @(
+        @{ Prop = "ExclusionPath";      Cmd = { param($v) Remove-MpPreference -ExclusionPath $v -ErrorAction Stop } },
+        @{ Prop = "ExclusionProcess";   Cmd = { param($v) Remove-MpPreference -ExclusionProcess $v -ErrorAction Stop } },
+        @{ Prop = "ExclusionExtension"; Cmd = { param($v) Remove-MpPreference -ExclusionExtension $v -ErrorAction Stop } },
+        @{ Prop = "ExclusionIpAddress"; Cmd = { param($v) Remove-MpPreference -ExclusionIpAddress $v -ErrorAction Stop } }
+    )
+    foreach ($et in $exclusionTypes) {
+        @($prefs.($et.Prop)) | Where-Object { $_ } | ForEach-Object {
+            try {
+                & $et.Cmd $_
+                $mpCleared++
+                Write-Host "  [+] Removed $($et.Prop): $_" -ForegroundColor Green
+            } catch {
+                $mpFailed++
+                Write-Host "  [-] Failed to remove $($et.Prop) '$_': $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+}
+if ($mpCleared -eq 0 -and $mpFailed -eq 0) {
+    Write-Host "[+] No MpPreference exclusions found (already clean)" -ForegroundColor Green
+} elseif ($mpFailed -gt 0) {
+    Write-Host "[-] MpPreference exclusions: $mpCleared removed, $mpFailed failed" -ForegroundColor Red
+} else {
+    Write-Host "[+] Removed $mpCleared exclusions via MpPreference" -ForegroundColor Green
 }
 
 # ── Update and scan ──────────────────────────────────────────────────────────
@@ -2400,7 +2919,7 @@ Write-Host "[+] WinRM killed, disabled, and blocked" -ForegroundColor Green
 # Kick all disconnected/active RDP sessions
 qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|Disc")) { logoff $matches[1] } }
 # Kick a specific session (get ID from qwinsta)
-logoff <SESSION_ID>
+logoff SESSION_ID
 ```
 
 #### Sigcheck (verify signed binaries)
