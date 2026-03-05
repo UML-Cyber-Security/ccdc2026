@@ -5,12 +5,12 @@
 
 ---
 
-## Step 1: Immediate Actions (Run on Each Windows Host)
+## First 15 Minutes
 
-> [!TIP]
-> **Setup & Tools** — Get your environment ready
+<details>
+<summary><b>1. Setup & Tools</b> — Reset hosts, install Firefox, Sysinternals + Sysmon</summary>
 
-### 1. Reset Hosts File
+#### Reset Hosts File
 ```powershell
 $DocumentsPath = [System.Environment]::GetFolderPath("MyDocuments")
 $HostsFilePath = "C:\Windows\System32\drivers\etc\hosts"
@@ -23,7 +23,7 @@ $defaultHostsContent = @"
 Set-Content -Path $HostsFilePath -Value $defaultHostsContent -Force
 ```
 
-### 2. Install Firefox
+#### Install Firefox
 ```powershell
 $firefoxInstallerUrl = "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=en-US"
 $installerPath = "$env:TEMP\firefox_installer.exe"
@@ -32,36 +32,39 @@ Start-Process -FilePath $installerPath -Args "/S" -Wait
 Remove-Item -Path $installerPath
 ```
 
-### 3. Install Sysinternals
-<details>
-<summary><b>Downloads suite to C:\Sysinternals, accepts EULAs</b></summary>
+#### Install Sysinternals
 
 ```powershell
-$url = "https://download.sysinternals.com/files/SysinternalsSuite.zip"
-$zip = "$env:TEMP\SysinternalsSuite.zip"
-$temp = "$env:TEMP\SysinternalsExtract"
 $dest = "C:\Sysinternals"
+New-Item $dest -ItemType Directory -ErrorAction SilentlyContinue
 
-$keep = @(
+$tools = @(
     'procexp64.exe', 'Procmon64.exe', 'Autoruns64.exe', 'autorunsc64.exe',
     'Tcpview.exe', 'Sysmon64.exe', 'Sigcheck64.exe',
     'PsLoggedOn.exe', 'PsService.exe', 'AccessChk64.exe',
     'handle64.exe', 'listdlls64.exe', 'strings64.exe'
 )
-
-Invoke-WebRequest -Uri $url -OutFile $zip
-Expand-Archive -Path $zip -DestinationPath $temp -Force
-New-Item $dest -ItemType Directory -ErrorAction SilentlyContinue
-foreach ($tool in $keep) {
-    $src = Join-Path $temp $tool
-    if (Test-Path $src) { Copy-Item $src $dest -Force }
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$wc = New-Object System.Net.WebClient
+$wc.Headers.Add("User-Agent", "Mozilla/5.0")
+foreach ($t in $tools) {
+    $wc.DownloadFile("https://live.sysinternals.com/$t", "$dest\$t")
 }
-Remove-Item $zip, $temp -Recurse -Force
+$wc.Dispose()
 
-# Accept all Sysinternals EULAs so tools don't pop a dialog on first run
-reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f | Out-Null
+# Accept all Sysinternals EULAs per-tool so dialogs never appear
+Write-Host "[*] Accepting EULAs..." -ForegroundColor Cyan
+$eulaNames = @(
+    'Process Explorer','Process Monitor','Autoruns','AutorunsC',
+    'TCPView','Sysmon','Sigcheck','PsLoggedOn','PsService',
+    'AccessChk','Handle','ListDLLs','Strings'
+)
+foreach ($t in $eulaNames) {
+    reg add "HKCU\Software\Sysinternals\$t" /v EulaAccepted /t REG_DWORD /d 1 /f | Out-Null
+}
 
 # Set all .exe files to always run as admin
+Write-Host "[*] Setting run-as-admin..." -ForegroundColor Cyan
 Get-ChildItem "$dest\*.exe" | ForEach-Object {
     Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" `
         -Name $_.FullName -Value "~ RUNASADMIN" -ErrorAction SilentlyContinue
@@ -90,7 +93,8 @@ Get-ChildItem "$dest\*.exe" | ForEach-Object {
   </EventFiltering>
 </Sysmon>
 '@ | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
-Start-Process -FilePath "$dest\Sysmon64.exe" -ArgumentList "-i `"$env:TEMP\sc.xml`" -accepteula" -Wait -NoNewWindow
+Write-Host "[*] Installing Sysmon..." -ForegroundColor Cyan
+cmd /c "`"$dest\Sysmon64.exe`" -accepteula -i `"$env:TEMP\sc.xml`" >nul 2>&1"
 
 # Launch the tools you actually need open during competition
 Start-Process "$dest\procexp64.exe"   # process explorer
@@ -99,39 +103,15 @@ Start-Process "$dest\Tcpview.exe"     # live network connections
 
 Write-Host "[+] Sysinternals installed to $dest — Sysmon running, tools launched" -ForegroundColor Green
 ```
+
 </details>
 
 <details>
-<summary><b>Manual Sysmon / legacy full Sysinternals install</b></summary>
+<summary><b>2. Disable & Reset Accounts</b> — Local + AD accounts, group membership reset, krbtgt</summary>
 
-```powershell
-# Sysmon: check status
-sc query Sysmon64
-# Sysmon: update config (re-run the install script's XML block first)
-C:\Sysinternals\Sysmon64.exe -c "$env:TEMP\sc.xml"
-# Sysmon: uninstall
-C:\Sysinternals\Sysmon64.exe -u
-```
-```powershell
-# Legacy: download full suite (all tools, no filtering)
-Invoke-WebRequest "https://download.sysinternals.com/files/SysinternalsSuite.zip" -OutFile "$env:TEMP\ss.zip"
-Expand-Archive "$env:TEMP\ss.zip" -DestinationPath "C:\Sysinternals" -Force
-Remove-Item "$env:TEMP\ss.zip"
-reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f
-```
-</details>
+#### Local accounts
 
----
-
-> [!CAUTION]
-> **Lock Down Accounts** — Highest priority security actions
-
-### 4. Disable & Reset Accounts
-
-**Local accounts:**
-<details>
-<summary><b>List all local users with group memberships</b></summary>
-
+**List local users:**
 ```powershell
 Get-LocalUser | Select-Object Name, Enabled, LastLogon, @{N='Groups';E={
     $user = $_.Name
@@ -142,84 +122,169 @@ Get-LocalUser | Select-Object Name, Enabled, LastLogon, @{N='Groups';E={
     $g -join ', '
 }} | Format-Table -AutoSize
 ```
-</details>
 
 **Disable:**
 ```powershell
 "Guest","Administrator" | ForEach-Object { Disable-LocalUser -Name $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
 ```
-**Re-enable:**
-```powershell
-"Guest","Administrator" | ForEach-Object { Enable-LocalUser -Name $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
-```
 
-**AD accounts (DC only):**
-<details>
-<summary><b>List all AD users with group memberships</b></summary>
+#### AD accounts (DC only)
 
+**List AD users:**
 ```powershell
 Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, Enabled, LastLogonDate, @{N='Groups';E={
     ($_.MemberOf | ForEach-Object { ($_ -split ',')[0] -replace 'CN=' }) -join ', '
 }} | Format-Table -AutoSize
 ```
-</details>
 
 **Disable:**
 ```powershell
-"Guest","krbtgt" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
-```
-**Re-enable:**
-```powershell
-"Guest" | ForEach-Object { Enable-ADAccount -Identity $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
+"Guest","Administrator" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
 ```
 
-<details>
-<summary><b>Strip all groups (keep list) — leaves users in Domain Users only</b></summary>
-
+#### Reset privileged groups to default AD membership
 ```powershell
-$keep = @("Administrator","krbtgt")
-$users = @(Get-ADUser -Filter * -Properties MemberOf | Where-Object { $_.SamAccountName -notin $keep -and $_.MemberOf })
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  DESIRED STATE — default AD privileged group memberships                   ║
+# ║  Only Administrator should be in these. Everything else gets removed.      ║
+# ║  Groups listed here get their nested group memberships enforced too.       ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# Preview what will be stripped
-Write-Host "`n=== DRY RUN — will strip groups from $($users.Count) users ===" -ForegroundColor Cyan
-Write-Host "  Keeping: $($keep -join ', ')" -ForegroundColor Green
-Write-Host ""
-foreach ($u in $users) {
-    $groups = ($u.MemberOf | ForEach-Object { ($_ -split ',')[0] -replace 'CN=' }) -join ', '
-    Write-Host "  $($u.SamAccountName) — $groups" -ForegroundColor Yellow
+# Which users belong in which groups (by default only Administrator)
+$defaultUsers = @{
+    "Domain Admins"          = @("Administrator")
+    "Enterprise Admins"      = @("Administrator")
+    "Schema Admins"          = @("Administrator")
+    "Administrators"         = @("Administrator")
+    "Group Policy Creator Owners" = @("Administrator")
+    "Server Operators"       = @()
+    "Account Operators"      = @()
+    "Backup Operators"       = @()
+    "Print Operators"        = @()
+    "Remote Desktop Users"   = @()
+    "DnsAdmins"              = @()
 }
+
+# Which groups should be nested in which groups
+$defaultGroupNesting = @{
+    "Administrators" = @("Domain Admins", "Enterprise Admins")
+    "Denied RODC Password Replication Group" = @(
+        "Domain Admins", "Enterprise Admins", "Schema Admins",
+        "Read-only Domain Controllers", "Domain Controllers"
+    )
+    "Group Policy Creator Owners" = @()
+    "Schema Admins"          = @()
+    "Domain Admins"          = @()
+    "Enterprise Admins"      = @()
+    "Server Operators"       = @()
+    "Account Operators"      = @()
+    "Backup Operators"       = @()
+    "Print Operators"        = @()
+    "Remote Desktop Users"   = @()
+}
+
+# ── Step 1: Backup current state ─────────────────────────────────────────────
+$backupFile = "$env:USERPROFILE\Desktop\ad-groups-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
+$backupRows = @()
+foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Object -Unique)) {
+    try {
+        $members = Get-ADGroupMember -Identity $groupName -ErrorAction Stop
+        foreach ($m in $members) {
+            $backupRows += [PSCustomObject]@{
+                Group      = $groupName
+                Member     = $m.SamAccountName
+                MemberType = $m.objectClass
+                MemberDN   = $m.distinguishedName
+            }
+        }
+    } catch {}
+}
+$backupRows | Export-Csv -Path $backupFile -NoTypeInformation
+Write-Host "[+] Backed up current state to $backupFile" -ForegroundColor Green
+
+# ── Step 2: Dry run — show what will change ──────────────────────────────────
+$toRemove = @()
+$toAdd    = @()
+
+foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Object -Unique)) {
+    try { $currentMembers = @(Get-ADGroupMember -Identity $groupName -ErrorAction Stop) } catch { continue }
+
+    $allowedUsers  = if ($defaultUsers.ContainsKey($groupName))        { $defaultUsers[$groupName] }        else { @() }
+    $allowedGroups = if ($defaultGroupNesting.ContainsKey($groupName)) { $defaultGroupNesting[$groupName] } else { @() }
+
+    foreach ($m in $currentMembers) {
+        if ($m.objectClass -eq 'user' -and $m.SamAccountName -notin $allowedUsers) {
+            $toRemove += [PSCustomObject]@{ Group=$groupName; Member=$m.SamAccountName; Type='user'; DN=$m.distinguishedName }
+        }
+        if ($m.objectClass -eq 'group' -and $m.SamAccountName -notin $allowedGroups -and $m.Name -notin $allowedGroups) {
+            $toRemove += [PSCustomObject]@{ Group=$groupName; Member=$m.Name; Type='group'; DN=$m.distinguishedName }
+        }
+    }
+
+    # Check if any default members are missing (red team may have removed Administrator from Domain Admins)
+    $currentNames = $currentMembers | ForEach-Object { $_.SamAccountName }
+    foreach ($u in $allowedUsers) {
+        if ($u -notin $currentNames) {
+            $toAdd += [PSCustomObject]@{ Group=$groupName; Member=$u; Type='user' }
+        }
+    }
+    $currentGroupNames = $currentMembers | Where-Object { $_.objectClass -eq 'group' } | ForEach-Object { $_.Name }
+    foreach ($g in $allowedGroups) {
+        if ($g -notin $currentGroupNames) {
+            $toAdd += [PSCustomObject]@{ Group=$groupName; Member=$g; Type='group' }
+        }
+    }
+}
+
+Write-Host "`n=== WILL REMOVE ($($toRemove.Count)) ===" -ForegroundColor Red
+foreach ($r in $toRemove) { Write-Host "  [$($r.Type)] $($r.Member) from $($r.Group)" -ForegroundColor Yellow }
+
+Write-Host "`n=== WILL ADD BACK ($($toAdd.Count)) ===" -ForegroundColor Green
+foreach ($a in $toAdd) { Write-Host "  [$($a.Type)] $($a.Member) to $($a.Group)" -ForegroundColor Cyan }
+
+if ($toRemove.Count -eq 0 -and $toAdd.Count -eq 0) {
+    Write-Host "`n[OK] All privileged groups already match defaults." -ForegroundColor Green
+    return
+}
+
 Write-Host ""
 $confirm = Read-Host "Proceed? (y/n)"
 if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
 
-# Execute
-$groupMap = @{}
-foreach ($u in $users) {
-    foreach ($g in $u.MemberOf) { if (-not $groupMap[$g]) { $groupMap[$g] = @() }; $groupMap[$g] += $u.SamAccountName }
+# ── Step 3: Execute removals ─────────────────────────────────────────────────
+foreach ($r in $toRemove) {
+    try {
+        Remove-ADGroupMember -Identity $r.Group -Members $r.DN -Confirm:$false
+        Write-Host "  REMOVED [$($r.Type)] $($r.Member) from $($r.Group)" -ForegroundColor Green
+    } catch {
+        Write-Host "  FAILED to remove $($r.Member) from $($r.Group): $_" -ForegroundColor Red
+    }
 }
-foreach ($g in $groupMap.Keys) {
-    $name = ($g -split ',')[0] -replace 'CN='
-    Remove-ADGroupMember -Identity $g -Members $groupMap[$g] -Confirm:$false
-    Write-Host "  $name — removed: $($groupMap[$g] -join ', ')" -ForegroundColor Green
+
+# ── Step 4: Execute additions (restore missing defaults) ─────────────────────
+foreach ($a in $toAdd) {
+    try {
+        Add-ADGroupMember -Identity $a.Group -Members $a.Member -ErrorAction Stop
+        Write-Host "  ADDED [$($a.Type)] $($a.Member) to $($a.Group)" -ForegroundColor Green
+    } catch {
+        Write-Host "  FAILED to add $($a.Member) to $($a.Group): $_" -ForegroundColor Red
+    }
 }
-Write-Host "`n  Done. Stripped $($users.Count) users." -ForegroundColor Cyan
+
+Write-Host "`n  Done. Removed $($toRemove.Count), added $($toAdd.Count). Backup: $backupFile" -ForegroundColor Cyan
 ```
+
+**Reset krbtgt twice (DC only)** — kills Golden Tickets. Reset twice because AD keeps current + previous hash. Do this manually through Active Directory Users and Computers: right-click `krbtgt` > Reset Password. Run it **twice** back-to-back. May briefly break Kerberos auth.
+
 </details>
 
-**Reset krbtgt twice (DC only)** — kills Golden Tickets. Reset twice because AD keeps current + previous hash.
-```powershell
-Get-ADUser krbtgt | Set-ADAccountPassword -Reset -NewPassword (ConvertTo-SecureString (([char[]]([char]33..[char]122) | Get-Random -Count 32) -join '') -AsPlainText -Force)
-```
-Run the above command **twice** back-to-back. May briefly break Kerberos auth.
-
-### 5. Review & Kick Active Sessions
+<details>
+<summary><b>3. Review & Kick Active Sessions</b> — Show/kill RDP, disable SSH/WinRM</summary>
 
 > [!WARNING]
 > **Disabling an account does NOT kick active sessions.** You must also logoff/terminate existing sessions.
 
-<details>
-<summary><b>Show all active sessions (RDP, SSH, WinRM)</b></summary>
-
+#### Show all active sessions (RDP, SSH, WinRM)
 ```powershell
 Write-Host "`n=== RDP Sessions ===" -ForegroundColor Cyan
 $rdp = qwinsta 2>&1 | Where-Object { $_ -match "rdp-tcp|console" -and $_ -notmatch "^SESSIONNAME" }
@@ -251,18 +316,14 @@ if ($winrmService) {
 
 Write-Host ""
 ```
-</details>
 
-**Kick all RDP sessions:**
-```powershell
-qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|Disc")) { logoff $matches[1] } }
-```
-**Kick a specific RDP session** (use session ID from `qwinsta` output):
+#### Kick a specific RDP session
+Use session ID from `qwinsta` output above:
 ```powershell
 logoff <SESSION_ID>
 ```
 
-**Disable SSH** (kill sessions, stop, block firewall, prevent startup):
+#### Disable SSH (kill sessions, stop, block firewall, prevent startup)
 ```powershell
 Get-Process sshd, ssh -ErrorAction SilentlyContinue | Stop-Process -Force
 Stop-Service sshd -Force -ErrorAction SilentlyContinue
@@ -270,46 +331,13 @@ Set-Service sshd -StartupType Disabled -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName "Block SSH Inbound" -Direction Inbound -Protocol TCP -LocalPort 22,2222 -Action Block -ErrorAction SilentlyContinue
 Write-Host "[+] SSH killed, disabled, and blocked" -ForegroundColor Green
 ```
-**Enable SSH:**
-```powershell
-Remove-NetFirewallRule -DisplayName "Block SSH Inbound" -ErrorAction SilentlyContinue
-Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service sshd -ErrorAction SilentlyContinue
-Write-Host "[+] SSH enabled and started" -ForegroundColor Green
-```
 
-**Disable WinRM** (kill sessions, stop, block firewall, prevent startup):
-```powershell
-Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue | ForEach-Object { Remove-WSManInstance -ResourceURI shell -SelectorSet @{ShellId=$_.ShellId} }
-Stop-Service WinRM -Force -ErrorAction SilentlyContinue
-Set-Service WinRM -StartupType Disabled -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName "Block WinRM Inbound" -Direction Inbound -Protocol TCP -LocalPort 5985,5986 -Action Block -ErrorAction SilentlyContinue
-Write-Host "[+] WinRM killed, disabled, and blocked" -ForegroundColor Green
-```
-**Enable WinRM:**
-```powershell
-Remove-NetFirewallRule -DisplayName "Block WinRM Inbound" -ErrorAction SilentlyContinue
-Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service WinRM -ErrorAction SilentlyContinue
-Write-Host "[+] WinRM enabled and started" -ForegroundColor Green
-```
+</details>
 
----
+<details>
+<summary><b>4. Network & Tools</b> — Install Nmap, Wireshark, enable firewall</summary>
 
-> [!TIP]
-> **Monitoring & Detection** — Get visibility before hardening
-
-### 6. Run Sigcheck
-```powershell
-.\sigcheck.exe -i "C:\\
-```
-
----
-
-> [!NOTE]
-> **Network & Tools** — Install remaining tools, configure firewall
-
-### 9. Install Nmap
+#### Install Nmap
 ```powershell
 $nmapUrl = "https://nmap.org/dist/nmap-7.93-setup.exe"
 $installerPath = "$env:USERPROFILE\Downloads\nmap-setup.exe"
@@ -318,7 +346,7 @@ Start-Process -FilePath $installerPath -ArgumentList '/forceinstall /NpcapInstal
 Remove-Item -Path $installerPath -Force
 ```
 
-### 10. Install Wireshark
+#### Install Wireshark
 ```powershell
 $installerUrl = "https://2.na.dl.wireshark.org/win64/Wireshark-4.6.2-x64.exe"
 $installerPath = "wireshark.exe"
@@ -327,7 +355,7 @@ Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
 Remove-Item -Path $installerPath
 ```
 
-### 11. Enable Firewall
+#### Enable Firewall
 ```powershell
 # Turn on firewall for all profiles
 Set-NetFirewallProfile -All -Enabled True
@@ -341,25 +369,11 @@ Enable-NetFirewallRule -DisplayName "File and Printer Sharing (Echo Request - IC
 Get-NetFirewallProfile | Format-Table Name, Enabled -AutoSize
 ```
 
----
-
-> [!IMPORTANT]
-> **Domain Hardening** — DC-only steps that protect the whole domain
-
-### 12. Run Harden-GPO.ps1 (DC only)
-Hardens domain-wide: audit logging (tuned for WinStride/Sysmon), password policy (NIST 800-63B), SMB signing, disable SMB1, LLMNR, NBT-NS, WPAD, credential protection, Windows Defender, and more. Verifies every setting after apply.
-```powershell
-# Safe mode (recommended for qualifiers — won't break services)
-powershell -ExecutionPolicy Bypass -File scripts\Harden-GPO.ps1 -S
-```
-```powershell
-# Full hardening (more aggressive — can break WinRM by IP, RC4 services)
-powershell -ExecutionPolicy Bypass -File scripts\Harden-GPO.ps1 -SkipReset
-```
+</details>
 
 <details>
-<summary><b>Full Harden-GPO.ps1 script</b></summary>
-
+<summary><b>5. Harden GPO (DC only)</b> — Domain-wide audit, password, encryption, Defender hardening</summary>
+Hardens domain-wide: audit logging (tuned for WinStride/Sysmon), password policy (NIST 800-63B), SMB signing, disable SMB1, LLMNR, NBT-NS, WPAD, credential protection, Windows Defender, and more. Verifies every setting after apply. Copy-paste the script below into a DC PowerShell session.
 ```powershell
 <#
 .SYNOPSIS
@@ -1068,114 +1082,276 @@ if ($script:failures.Count -gt 0) { exit 1 }
 </details>
 
 <details>
-<summary><b>Manual alternatives (if script fails or for non-DC machines)</b></summary>
+<summary><b>6. Enable Windows Defender</b> — Fix sabotage, clean exclusions, verify running (run step 5 first!)</summary>
 
-#### Remove Bad GPOs (DC only)
-Open `gpmc.msc`, delete suspicious GPOs
+> [!CAUTION]
+> **You must run step 5 (Harden-GPO.ps1) before this.** That script enables Defender via GPO. This step pulls that policy, does local cleanup GPO can't do, and confirms everything works.
 
-#### Reset GPOs to Default (DC only)
 ```powershell
-dcgpofix /target:both
-```
-#### Force GPO Update
-```powershell
+# ── Phase 0: Preflight checks ────────────────────────────────────────────────
+Write-Host "=== Preflight ===" -ForegroundColor Cyan
+
+# Binaries exist?
+# WinDefend service exists?
+$defSvc = Get-Service WinDefend -ErrorAction SilentlyContinue
+if (-not $defSvc) {
+    Write-Host "  WinDefend service:       MISSING" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "[!] Defender is not installed. Run these manually (slow, may impact services):" -ForegroundColor Red
+    Write-Host "      Install-WindowsFeature -Name Windows-Defender -IncludeManagementTools  # Server only" -ForegroundColor Yellow
+    Write-Host "      sfc /scannow" -ForegroundColor Yellow
+    Write-Host "      DISM /Online /Cleanup-Image /RestoreHealth" -ForegroundColor Yellow
+    Write-Host "    Then re-run this script." -ForegroundColor Red
+    Write-Host ""
+    return
+}
+Write-Host "  WinDefend service:       Present ($($defSvc.Status))" -ForegroundColor $(if($defSvc.Status -eq 'Running'){'Green'}else{'Yellow'})
+
+# Engine binary exists? (check actual path from service, not hardcoded)
+$imgPath = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend" -Name ImagePath -EA SilentlyContinue).ImagePath -replace '"',''
+$engExists = $imgPath -and (Test-Path $imgPath)
+Write-Host "  Engine binary:           $(if($engExists){'OK'}else{'MISSING'}) ($imgPath)" -ForegroundColor $(if($engExists){'Green'}else{'Red'})
+if (-not $engExists) {
+    Write-Host ""
+    Write-Host "[!] Defender binary missing or corrupted. Run these manually (slow, may impact services):" -ForegroundColor Red
+    Write-Host "      sfc /scannow" -ForegroundColor Yellow
+    Write-Host "      DISM /Online /Cleanup-Image /RestoreHealth" -ForegroundColor Yellow
+    Write-Host "    Then re-run this script." -ForegroundColor Red
+    Write-Host ""
+    return
+}
+
+# Feature installed? (Server only — silently skips on workstations)
+$feat = Get-WindowsFeature -Name Windows-Defender* -ErrorAction SilentlyContinue
+if ($feat -and $feat.InstallState -ne 'Installed') {
+    Write-Host "  Windows-Defender feature: $($feat.InstallState)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "[!] Defender feature not installed. Run manually (may require reboot):" -ForegroundColor Red
+    Write-Host "      Install-WindowsFeature -Name Windows-Defender -IncludeManagementTools" -ForegroundColor Yellow
+    Write-Host "    Then re-run this script." -ForegroundColor Red
+    Write-Host ""
+    return
+} elseif ($feat) {
+    Write-Host "  Windows-Defender feature: $($feat.InstallState)" -ForegroundColor Green
+}
+
+# Services
+foreach ($sn in @("WinDefend","WdNisSvc")) {
+    $st = (sc.exe query $sn 2>&1 | Select-String "STATE").ToString().Trim()
+    Write-Host "  ${sn}: $st" -ForegroundColor $(if($st -match 'RUNNING'){'Green'}else{'Yellow'})
+}
+
+# Drivers
+foreach ($dn in @("WdFilter","WdBoot","WdNisDrv")) {
+    $dv = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$dn" -Name Start -EA SilentlyContinue).Start
+    $disabled = $dv -eq 4
+    Write-Host "  Driver ${dn}: Start=$dv$(if($disabled){' (DISABLED)'})" -ForegroundColor $(if($disabled){'Red'}else{'Green'})
+}
+
+# Policy disable flags
+$polDis = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -EA SilentlyContinue).DisableAntiSpyware
+$locDis = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows Defender" -EA SilentlyContinue).DisableAntiSpyware
+if ($polDis -eq 1) { Write-Host "  [!] Policy DisableAntiSpyware = 1 (will fix)" -ForegroundColor Red }
+if ($locDis -eq 1) { Write-Host "  [!] Local DisableAntiSpyware = 1 (will fix)" -ForegroundColor Red }
+
+# Exclusions planted
+$mp = Get-MpPreference -ErrorAction SilentlyContinue
+$exTotal = (@($mp.ExclusionPath) + @($mp.ExclusionProcess) + @($mp.ExclusionExtension) + @($mp.ExclusionIpAddress) | Where-Object { $_ }).Count
+Write-Host "  Exclusions planted:      $exTotal" -ForegroundColor $(if($exTotal -eq 0){'Green'}else{'Red'})
+
+Write-Host ""
+
+# ── Phase 1: Fix red team sabotage that prevents Defender from starting ──────
+
+# 1a. Reset ACLs on Defender service keys (red team often locks these out)
+$svcKeys = @(
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdNisSvc",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdFilter",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdNisDrv",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdBoot",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\SecurityHealthService",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"
+)
+foreach ($key in $svcKeys) {
+    if (Test-Path $key) {
+        try {
+            $acl = New-Object System.Security.AccessControl.RegistrySecurity
+            $acl.SetAccessRuleProtection($false, $true)
+            $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
+                "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+            $acl.AddAccessRule($rule)
+            $rule2 = New-Object System.Security.AccessControl.RegistryAccessRule(
+                "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+            $acl.AddAccessRule($rule2)
+            Set-Acl -Path $key -AclObject $acl -ErrorAction Stop
+            Write-Host "[+] Reset ACLs on $key" -ForegroundColor Green
+        } catch {
+            Write-Host "[-] Could not reset ACLs on $key — $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+}
+
+# 1b. Re-enable Defender drivers red team may have disabled (Start=4 means disabled)
+$drivers = @{ "WdFilter" = 0; "WdNisDrv" = 3; "WdBoot" = 0 }
+foreach ($drv in $drivers.GetEnumerator()) {
+    $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$($drv.Key)"
+    if (Test-Path $path) {
+        $cur = (Get-ItemProperty $path -Name Start -ErrorAction SilentlyContinue).Start
+        if ($cur -eq 4) {
+            Set-ItemProperty $path -Name Start -Value $drv.Value
+            Write-Host "[+] Re-enabled driver $($drv.Key) (was disabled — REBOOT NEEDED)" -ForegroundColor Green
+        }
+    }
+}
+
+# 1c. Re-enable all Defender-related services
+$services = @("WinDefend", "WdNisSvc", "SecurityHealthService", "wscsvc")
+foreach ($svc in $services) { sc.exe config $svc start= auto 2>&1 | Out-Null }
+
+# 1d. Remove local registry keys that disable Defender outside of GPO
+$disableKeys = @(
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiSpyware" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiVirus" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring" }
+)
+foreach ($entry in $disableKeys) {
+    Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+}
+Write-Host "[+] Cleared local registry disable flags" -ForegroundColor Green
+
+# 1e. Undo ELAM (Early Launch Anti-Malware) disable
+bcdedit /deletevalue "{current}" disableintegritycheck 2>&1 | Out-Null
+bcdedit /set "{current}" integrityservices enable 2>&1 | Out-Null
+
+# ── Phase 2: Pull GPO and start services ─────────────────────────────────────
 gpupdate /force
-```
-#### Disable LLMNR
-`gpedit.msc -> Computer Configuration -> Administrative Templates -> Network -> DNS Client -> Turn off multicast name resolution -> Enable`
-
-#### Disable NBT-NS
-`Control Panel > Network and Sharing Center > Change adapter settings -> Properties -> Internet Protocol Version 4 (TCP/IPv4) Properties -> Advanced -> WINS -> Disable NetBIOS over TCP/IP`
-
-#### SMB Signing
-`gpedit.msc -> Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Local Policies -> Security Options -> Microsoft network client: Digitally sign communications (always) = Enabled. Microsoft network server: Digitally sign communications (always) = Enabled.`
-
-#### Disable SMB1
-```powershell
-Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart
-```
-
-#### Disable Services
-```powershell
-gsv RemoteRegistry,TlntSvr,SNMP -ea 0 | spsv -f -pas | Set-Service -st Disabled
-```
-</details>
-
----
-
-> [!WARNING]
-> **Defense** — Re-enable protections red team may have disabled
-
-### 13. Enable Windows Defender
-<details>
-<summary><b>Apply GPO, clean up exclusions, verify Defender is running</b></summary>
-
-> [!IMPORTANT]
-> `Harden-GPO.ps1` (step 12) handles enabling Defender via GPO. This script pulls that policy, does local cleanup GPO can't do, and confirms everything works.
-
-```powershell
-# ── Pull GPO and start the service ───────────────────────────────────────────
-gpupdate /force
-sc.exe config WinDefend start= auto 2>&1 | Out-Null
-net start WinDefend 2>&1 | Out-Null
+foreach ($svc in $services) { net start $svc 2>&1 | Out-Null }
 Start-Sleep -Seconds 3
+
+# If service still won't start, try MpCmdRun -wdenable
+if ((Get-Service WinDefend -ErrorAction SilentlyContinue).Status -ne 'Running') {
+    Write-Host "[-] WinDefend not running — trying MpCmdRun -wdenable" -ForegroundColor Yellow
+    & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -wdenable 2>&1 | Out-Null
+    Start-Service WinDefend -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+}
 
 # Re-enable Defender scheduled tasks red team may have disabled
 Get-ScheduledTask -TaskPath "\Microsoft\Windows\Windows Defender\*" -ErrorAction SilentlyContinue |
     Enable-ScheduledTask -ErrorAction SilentlyContinue
 
-# ── Remove exclusions red team added (GPO can't do this) ────────────────────
+# Force-enable settings the service may not pick up from registry alone
+Set-MpPreference -DisableBehaviorMonitoring $false -ErrorAction SilentlyContinue
+Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
+Set-MpPreference -DisableIOAVProtection $false -ErrorAction SilentlyContinue
+
+# ── ASR: Block credential stealing from LSASS (immediate, no reboot) ─────────
+try {
+    Add-MpPreference -AttackSurfaceReductionRules_Ids 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop
+    Write-Host "[+] ASR rule enabled: Block credential stealing from LSASS" -ForegroundColor Green
+} catch {
+    Write-Host "[!] ASR LSASS rule failed (Defender may not be fully functional yet): $_" -ForegroundColor Yellow
+}
+
+# ── Phase 3: Nuke ALL exclusions (local prefs + direct registry + policy) ────
+
+# 3a. reg.exe force-clear all exclusion keys (works even with locked ACLs / service down)
+@(
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\TemporaryPaths",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\IpAddresses",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Processes",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Extensions",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\TemporaryPaths"
+) | ForEach-Object { reg.exe delete $_ /va /f 2>&1 | Out-Null }
+Write-Host "[+] Cleared all exclusion registry keys via reg.exe" -ForegroundColor Green
+
+# 3b. Also clean via MpPreference (clears WMI store the cmdlet reads from)
 $prefs = Get-MpPreference -ErrorAction SilentlyContinue
 if ($prefs) {
     @($prefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionPath $_ -ErrorAction SilentlyContinue }
     @($prefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ -ErrorAction SilentlyContinue }
     @($prefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ -ErrorAction SilentlyContinue }
+    @($prefs.ExclusionIpAddress) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionIpAddress $_ -ErrorAction SilentlyContinue }
+    Write-Host "[+] Cleared exclusions via MpPreference" -ForegroundColor Green
 }
 
-# ── Update signatures and scan ───────────────────────────────────────────────
-Update-MpSignature
-Start-MpScan -ScanType QuickScan
+# ── Phase 4: Update signatures and scan ──────────────────────────────────────
+Update-MpSignature -ErrorAction SilentlyContinue
+Start-MpScan -ScanType QuickScan -ErrorAction SilentlyContinue
 
-# ── Verify ───────────────────────────────────────────────────────────────────
-$s = Get-MpComputerStatus
+# ── Phase 5: Verify ──────────────────────────────────────────────────────────
+$s = Get-MpComputerStatus -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "=== Defender Status ===" -ForegroundColor Cyan
-Write-Host "  AMServiceEnabled:        $($s.AMServiceEnabled)"          -ForegroundColor $(if($s.AMServiceEnabled){'Green'}else{'Red'})
-Write-Host "  RealTimeProtection:      $($s.RealTimeProtectionEnabled)" -ForegroundColor $(if($s.RealTimeProtectionEnabled){'Green'}else{'Red'})
-Write-Host "  BehaviorMonitor:         $($s.BehaviorMonitorEnabled)"    -ForegroundColor $(if($s.BehaviorMonitorEnabled){'Green'}else{'Red'})
-Write-Host "  OnAccessProtection:      $($s.OnAccessProtectionEnabled)" -ForegroundColor $(if($s.OnAccessProtectionEnabled){'Green'}else{'Red'})
-Write-Host "  IoavProtection:          $($s.IoavProtectionEnabled)"     -ForegroundColor $(if($s.IoavProtectionEnabled){'Green'}else{'Red'})
-Write-Host "  AntivirusSignatureAge:   $($s.AntivirusSignatureAge) days" -ForegroundColor $(if($s.AntivirusSignatureAge -le 1){'Green'}else{'Yellow'})
+if ($s) {
+    Write-Host "  AMServiceEnabled:        $($s.AMServiceEnabled)"          -ForegroundColor $(if($s.AMServiceEnabled){'Green'}else{'Red'})
+    Write-Host "  RealTimeProtection:      $($s.RealTimeProtectionEnabled)" -ForegroundColor $(if($s.RealTimeProtectionEnabled){'Green'}else{'Red'})
+    Write-Host "  BehaviorMonitor:         $($s.BehaviorMonitorEnabled)"    -ForegroundColor $(if($s.BehaviorMonitorEnabled){'Green'}else{'Red'})
+    Write-Host "  OnAccessProtection:      $($s.OnAccessProtectionEnabled)" -ForegroundColor $(if($s.OnAccessProtectionEnabled){'Green'}else{'Red'})
+    Write-Host "  IoavProtection:          $($s.IoavProtectionEnabled)"     -ForegroundColor $(if($s.IoavProtectionEnabled){'Green'}else{'Red'})
+    Write-Host "  TamperProtection:        $($s.IsTamperProtected)"        -ForegroundColor $(if($s.IsTamperProtected){'Green'}else{'Red'})
+    Write-Host "  AntivirusSignatureAge:   $($s.AntivirusSignatureAge) days" -ForegroundColor $(if($s.AntivirusSignatureAge -le 1){'Green'}else{'Yellow'})
+} else {
+    Write-Host "  [!] Get-MpComputerStatus failed — Defender may not be installed" -ForegroundColor Red
+}
+
+# Check ASR LSASS rule
+$asrPrefs = Get-MpPreference -ErrorAction SilentlyContinue
+$asrIds = $asrPrefs.AttackSurfaceReductionRules_Ids
+$asrActions = $asrPrefs.AttackSurfaceReductionRules_Actions
+$lsassRuleId = "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2"
+$lsassEnabled = $false
+if ($asrIds -and $asrActions) {
+    $lsassIdx = [array]::IndexOf($asrIds, $lsassRuleId)
+    if ($lsassIdx -ge 0) { $lsassEnabled = ($asrActions[$lsassIdx] -eq 1) }
+}
+Write-Host "  ASR LSASS Protection:    $lsassEnabled" -ForegroundColor $(if($lsassEnabled){'Green'}else{'Red'})
 Write-Host ""
-if ($s.AMServiceEnabled -and $s.RealTimeProtectionEnabled) {
+
+# Check remaining exclusions
+$finalPrefs = Get-MpPreference -ErrorAction SilentlyContinue
+$exCount = (@($finalPrefs.ExclusionPath) + @($finalPrefs.ExclusionProcess) + @($finalPrefs.ExclusionExtension) |
+    Where-Object { $_ }).Count
+if ($exCount -gt 0) {
+    Write-Host "[WARN] $exCount exclusions still present:" -ForegroundColor Yellow
+    @($finalPrefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Write-Host "  Path: $_" -ForegroundColor Yellow }
+    @($finalPrefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Write-Host "  Proc: $_" -ForegroundColor Yellow }
+    @($finalPrefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Write-Host "  Ext:  $_" -ForegroundColor Yellow }
+} else {
+    Write-Host "[OK] No exclusions remain" -ForegroundColor Green
+}
+
+if ($s -and $s.AMServiceEnabled -and $s.RealTimeProtectionEnabled) {
     Write-Host "[OK] Defender is fully operational" -ForegroundColor Green
 } else {
-    Write-Host "[FAIL] Defender is NOT fully operational — check GPO on DC" -ForegroundColor Red
+    Write-Host "[FAIL] Defender is NOT fully operational — see troubleshooting below" -ForegroundColor Red
 }
 ```
 
 > [!NOTE]
-> **If Defender still won't start:**
-> 1. On the DC: `gpmc.msc` > look for GPOs disabling Defender under Computer Config > Policies > Admin Templates > Windows Components > Windows Defender Antivirus — delete them
-> 2. On this machine: `gpupdate /force` and re-run the script above
-> 3. If the WinDefend binary was deleted: `sfc /scannow` or `DISM /Online /Cleanup-Image /RestoreHealth`
+> **If Defender still won't start after the script above:**
+> 1. **Rogue GPOs on DC:** `gpmc.msc` > look for GPOs disabling Defender under Computer Config > Policies > Admin Templates > Windows Components > Microsoft Defender Antivirus — delete them
+> 2. **Competing GPOs:** Run `gpresult /h gpresult.html` on the affected machine — look for any GPO setting `DisableAntiSpyware=1` or exclusions you didn't add
+> 3. **Repair Defender binaries:** `sfc /scannow` then `DISM /Online /Cleanup-Image /RestoreHealth`
+> 4. **Check for WMI persistence re-disabling Defender:**
+>    ```powershell
+>    Get-WMIObject -Namespace root\Subscription -Class __EventFilter
+>    Get-WMIObject -Namespace root\Subscription -Class CommandLineEventConsumer
+>    # Delete anything suspicious
+>    ```
+> 5. **Nuclear option:** `& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -wdenable`
+> 6. **Reboot required** if drivers were re-enabled in Phase 1 (WdFilter/WdBoot changes only take effect after reboot)
 
 </details>
 
----
-
-> [!NOTE]
-> **Prep for Automation** — Set up for Ansible and log analysis
-
-### 14. Enable WinRM for Ansible (run on each Windows machine)
-Configures WinRM, creates SSL cert, opens firewall — required before Ansible can connect.
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Enable-WinRM.ps1
-```
-
-### 15. Install Chainsaw
 <details>
-<summary><b>Download, extract, install to C:\Chainsaw</b></summary>
+<summary><b>7. Install Chainsaw</b> — Download, extract, install to C:\Chainsaw</summary>
 
 ```powershell
 $url = "https://github.com/WithSecureLabs/chainsaw/releases/latest/download/chainsaw_all_platforms+rules.zip"
@@ -1230,123 +1406,504 @@ Remove-Item $tempExtractPath -Recurse -Force
 Write-Host "`nInstallation complete!"
 Get-ChildItem $destinationPath
 ```
+
 </details>
 
-### 16. Chainsaw Triage
 <details>
-<summary><b>Run from C:\Chainsaw — targeted hunts, not a firehose</b></summary>
+<summary><b>8. Chainsaw Triage</b> — Run from C:\Chainsaw, targeted hunts</summary>
 
-All commands assume `cd C:\Chainsaw`. Set `$from` to competition start time (UTC) to ignore old noise.
+All commands assume `cd C:\Chainsaw`. Set `$hoursAgo` to how far back you want to look.
 
 ```powershell
 cd C:\Chainsaw
 $logs = "C:\Windows\System32\winevt\Logs"
-$from = "2026-03-14T09:00:00"  # ← SET TO COMPETITION START (UTC)
+$hoursAgo = 10  # ← CHANGE THIS: how many hours back to search
+$from = (Get-Date).ToUniversalTime().AddHours(-$hoursAgo).ToString("yyyy-MM-ddTHH:mm:ss")
+Write-Host "Searching from: $from (UTC)"
 ```
 
 #### A. Critical + High hits only (run this first)
 Shows only high-confidence detections. Start here.
 ```powershell
 .\chainsaw.exe hunt $logs -s rules/ --mapping mappings/sigma-event-logs-all.yml `
-    --level high --from $from --full -q
+    --level high --from $from --full
 ```
 
 #### B. Lateral movement
 PsExec, WMI, DCOM, remote services, pass-the-hash.
 ```powershell
 .\chainsaw.exe hunt $logs -r rules/evtx/lateral_movement/ `
-    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full
 ```
 
 #### C. Persistence
 Scheduled tasks, malicious services, registry run keys.
 ```powershell
 .\chainsaw.exe hunt $logs -r rules/evtx/persistence/ `
-    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full
 ```
 
 #### D. Credential access
 LSASS dumps, credential theft, Kerberoasting.
 ```powershell
 .\chainsaw.exe hunt $logs -r rules/evtx/credential_access/ `
-    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full
 ```
 
 #### E. Log tampering / defense evasion
 Event log clearing, Defender disabled, audit policy changed.
 ```powershell
 .\chainsaw.exe hunt $logs -r rules/evtx/log_tampering/ -r rules/evtx/defense_evasion/ `
-    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full
 ```
 
 #### F. Suspicious PowerShell
 Encoded commands, obfuscation, known tool invocations.
 ```powershell
 .\chainsaw.exe hunt $logs -r rules/evtx/powershell/ `
-    --mapping mappings/sigma-event-logs-all.yml --from $from --full -q
+    --mapping mappings/sigma-event-logs-all.yml --from $from --full
 ```
 
-#### G. Search for a specific IOC
+#### G. Ansible detection (red team indicator)
+If Ansible was run on a box, it's red team. Ansible leaves `ansible-tmp-*` paths and module names in PowerShell/WinRM logs.
+```powershell
+.\chainsaw.exe search ansible $logs -i --from $from
+.\chainsaw.exe search "ansible-tmp" $logs -i --from $from
+.\chainsaw.exe search "winrm" $logs -i --from $from
+```
+
+#### H. Search for a specific IOC
 Replace the search term with whatever you're looking for.
 ```powershell
 # Known tool name
-.\chainsaw.exe search mimikatz $logs -i --from $from -q
+.\chainsaw.exe search mimikatz $logs -i --from $from
 
 # Suspicious username
-.\chainsaw.exe search -t "Event.EventData.TargetUserName: =svc_backup" "$logs\Security.evtx" --from $from -q
+.\chainsaw.exe search -t "Event.EventData.TargetUserName: =svc_backup" "$logs\Security.evtx" --from $from
 
 # IP address
-.\chainsaw.exe search -e "10\.0\.0\.200" $logs --from $from -q
+.\chainsaw.exe search -e "10\.0\.0\.200" $logs --from $from
+```
+
+</details>
+
+<details>
+<summary><b>9. Rotate All Passwords</b> — Local + AD password reset, saves to CSV</summary>
+
+#### Local accounts (run on every machine)
+```powershell
+$excludedUsers = @("Administrator", "Guest")
+$logFile = "$env:USERPROFILE\Desktop\local_passwords.csv"
+"Username,NewPassword" | Out-File -FilePath $logFile
+
+function Generate-RandomPassword {
+    param ([int]$length = 20)
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
+    -join ((1..$length) | ForEach-Object { Get-Random -InputObject $chars.ToCharArray() })
+}
+
+Get-LocalUser | Where-Object { $_.Enabled -eq $true } | ForEach-Object {
+    if ($excludedUsers -contains $_.Name) { Write-Host "Skipping: $($_.Name)" -ForegroundColor Yellow; return }
+    $pw = Generate-RandomPassword
+    try {
+        Set-LocalUser -Name $_.Name -Password (ConvertTo-SecureString $pw -AsPlainText -Force)
+        "$($_.Name),$pw" | Out-File -FilePath $logFile -Append
+        Write-Host "[+] $($_.Name)" -ForegroundColor Green
+    } catch { Write-Host "[-] $($_.Name): $_" -ForegroundColor Red }
+}
+Write-Host "`n[*] Passwords saved to $logFile" -ForegroundColor Cyan
+```
+
+#### AD accounts (DC only)
+```powershell
+Import-Module ActiveDirectory
+$excludedUsers = @("Administrator", "krbtgt")
+$logFile = "$env:USERPROFILE\Desktop\domain_passwords.csv"
+"Username,NewPassword" | Out-File -FilePath $logFile
+
+function Generate-RandomPassword {
+    param ([int]$length = 20)
+    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
+    -join ((1..$length) | ForEach-Object { Get-Random -InputObject $chars.ToCharArray() })
+}
+
+Get-ADUser -Filter * | ForEach-Object {
+    if ($excludedUsers -contains $_.SamAccountName) { Write-Host "Skipping: $($_.SamAccountName)" -ForegroundColor Yellow; return }
+    $pw = Generate-RandomPassword
+    try {
+        Set-ADAccountPassword -Identity $_.SamAccountName -Reset -NewPassword (ConvertTo-SecureString $pw -AsPlainText -Force)
+        Set-ADUser -Identity $_.SamAccountName -ChangePasswordAtLogon $true
+        "$($_.SamAccountName),$pw" | Out-File -FilePath $logFile -Append
+        Write-Host "[+] $($_.SamAccountName)" -ForegroundColor Green
+    } catch { Write-Host "[-] $($_.SamAccountName): $_" -ForegroundColor Red }
+}
+Write-Host "`n[*] Passwords saved to $logFile" -ForegroundColor Cyan
 ```
 
 </details>
 
 ---
 
-## Step 2: Threat Detection
-
-> [!CAUTION]
-> Run on each Windows machine from `Platform-Windows\`
-
-| Task | Script |
-|------|--------|
-| Kill Malware | `scripts\KillKnownMalwareProceses.ps1` |
-| Run All Detection | `scripts\IncidentResponse.ps1` |
-| Dump AD Config (DC only) | See `docs\networking.md` (AD Dump section) |
-| Dump DNS Records (DC only) | See `docs\networking.md` (DNS Dump section) |
-| Hidden Files | `scripts\IncidentResponse.ps1 -Function Find-HiddenExecutables` |
-| Recent Events | `scripts\IncidentResponse.ps1 -Function Get-RecentSecurityEvents` |
-| File Watcher | `scripts\CreateFileWatcher.ps1` |
-| Run Autoruns | `Autoruns64.exe` from Sysinternals folder |
-
----
-
-# Post-15 Minutes
-
-> [!TIP]
-> **Recover & Automate** — Re-enable accounts, set up Ansible, start log analysis
-
-## Step 3.1 Re-enable accounts
-### Remove account permissions and groups.
-### Re-enable Local and AD user accounts.
-
-## Step 3.2 Disable programs you didn't install such as browsers, chocolatey, WSL, etc.
-
-## Step 3.3: Ansible Setup (On Ubuntu Control Node)
+## Reference
 
 <details>
-<summary>Install Ansible</summary>
+<summary>WinRM Commands</summary>
 
+```powershell
+# FIRST: trust all machines (required when connecting by IP, not hostname)
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
+
+# Check if WinRM is enabled
+Get-Service WinRM
+Test-WSMan -ComputerName <TARGET_IP>
+
+# Run on all domain machines at once (run from DC)
+$computers = (Get-ADComputer -Filter {OperatingSystem -like "*Windows*"}).Name
+$cred = Get-Credential
+Invoke-Command -ComputerName $computers -Credential $cred -ScriptBlock {
+    # paste your script block here — runs on all machines in parallel
+}
+
+# Check if WinRM is enabled on a remote machine
+Test-WSMan -ComputerName <TARGET_IP>
+
+# Check with credentials
+$cred = Get-Credential
+Test-WSMan -ComputerName <TARGET_IP> -Authentication Negotiate -Credential $cred
+
+# Open interactive session (like SSH)
+Enter-PSSession -ComputerName <TARGET_IP> -Credential $cred
+
+# Run a single command without a session
+Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock { hostname }
+
+# Run a script file remotely
+Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -FilePath C:\scripts\myscript.ps1
+
+# ── Run on multiple machines at once ──────────────────────────────────────────
+# Hardcoded IPs
+Invoke-Command -ComputerName 10.0.0.1,10.0.0.2,10.0.0.3 -Credential $cred -ScriptBlock { Get-Service WinDefend }
+
+# From a text file (one IP/hostname per line)
+$computers = Get-Content "C:\computers.txt"
+Invoke-Command -ComputerName $computers -Credential $cred -ScriptBlock { hostname }
+
+# From Active Directory (all Windows machines)
+$computers = (Get-ADComputer -Filter {OperatingSystem -like "*Windows*"}).Name
+Invoke-Command -ComputerName $computers -Credential $cred -ScriptBlock { hostname }
+
+# Throttle if you have many machines (default is 32 at a time)
+Invoke-Command -ComputerName $computers -Credential $cred -ThrottleLimit 10 -ScriptBlock { hostname }
+
+# Copy a file to a remote machine
+$s = New-PSSession -ComputerName <TARGET_IP> -Credential $cred
+Copy-Item -Path C:\local\file.ps1 -Destination C:\remote\file.ps1 -ToSession $s
+Remove-PSSession $s
+
+# Bulk check which machines have WinRM enabled
+$machines = @("10.0.0.1","10.0.0.2","10.0.0.3")
+foreach ($m in $machines) {
+    $r = Test-WSMan -ComputerName $m -ErrorAction SilentlyContinue
+    if ($r) { Write-Host "[OK] $m" -ForegroundColor Green }
+    else    { Write-Host "[FAIL] $m" -ForegroundColor Red }
+}
+```
+
+</details>
+
+<details>
+<summary>Audit Unwanted Programs & Services</summary>
+
+```powershell
+# ============================================================
+#  AUDIT: Find programs/services that shouldn't be here
+# ============================================================
+
+Write-Host "`n========== UNWANTED SERVICES CHECK ==========" -ForegroundColor Cyan
+
+$suspectServices = @(
+    # Web servers
+    @{ Name = "W3SVC";        Label = "IIS Web Server" },
+    @{ Name = "WAS";          Label = "IIS Process Activation" },
+    @{ Name = "IISADMIN";     Label = "IIS Admin" },
+    # SQL Server (all common instance names)
+    @{ Name = "MSSQLSERVER";  Label = "SQL Server (Default)" },
+    @{ Name = "MSSQL`$*";     Label = "SQL Server (Named Instance)" },
+    @{ Name = "SQLBrowser";   Label = "SQL Server Browser" },
+    @{ Name = "SQLSERVERAGENT"; Label = "SQL Server Agent" },
+    @{ Name = "SQLWriter";    Label = "SQL Server VSS Writer" },
+    @{ Name = "MsDtsServer*"; Label = "SQL Server Integration Services" },
+    @{ Name = "ReportServer*"; Label = "SQL Server Reporting Services" },
+    # Remote access / management
+    @{ Name = "sshd";         Label = "OpenSSH Server" },
+    @{ Name = "WinRM";        Label = "WinRM" },
+    @{ Name = "TermService";  Label = "Remote Desktop Services" },
+    @{ Name = "TlntSvr";      Label = "Telnet Server" },
+    @{ Name = "RemoteRegistry"; Label = "Remote Registry" },
+    @{ Name = "RasMan";       Label = "Remote Access Connection Manager" },
+    @{ Name = "SNMP";         Label = "SNMP Service" },
+    # Package managers / dev tools
+    @{ Name = "chocolatey*";  Label = "Chocolatey Agent" },
+    # Containers / WSL
+    @{ Name = "LxssManager";  Label = "WSL (Windows Subsystem for Linux)" },
+    @{ Name = "Docker*";      Label = "Docker" },
+    @{ Name = "com.docker*";  Label = "Docker Desktop" },
+    # FTP / file sharing
+    @{ Name = "FTPSVC";       Label = "FTP Server (IIS)" },
+    # Print / misc
+    @{ Name = "Spooler";      Label = "Print Spooler" },
+    @{ Name = "BITS";         Label = "BITS (Background Transfer)" },
+    @{ Name = "XblGameSave";  Label = "Xbox Live" },
+    @{ Name = "WSearch";      Label = "Windows Search Indexer" },
+    @{ Name = "WMPNetworkSvc"; Label = "Windows Media Sharing" }
+)
+
+foreach ($svc in $suspectServices) {
+    $found = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
+    foreach ($s in $found) {
+        $status = $s.Status
+        $start  = $s.StartType
+        $color  = if ($status -eq "Running") { "Red" } elseif ($start -eq "Disabled") { "DarkGray" } else { "Yellow" }
+        Write-Host "  [$status / $start] $($svc.Label) ($($s.Name))" -ForegroundColor $color
+    }
+}
+
+Write-Host "`n========== IIS DETAILS ==========" -ForegroundColor Cyan
+$iis = Get-Service W3SVC -ErrorAction SilentlyContinue
+if ($iis) {
+    $ver = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\InetStp" -ErrorAction SilentlyContinue).VersionString
+    Write-Host "  IIS installed — Version: $ver — Status: $($iis.Status)" -ForegroundColor Red
+    try {
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
+        Get-Website | ForEach-Object { Write-Host "    Site: $($_.Name) — State: $($_.State) — Bindings: $($_.Bindings.Collection.bindingInformation)" -ForegroundColor Yellow }
+    } catch { Write-Host "    (Could not enumerate sites)" -ForegroundColor DarkGray }
+} else {
+    Write-Host "  IIS not installed" -ForegroundColor Green
+}
+
+Write-Host "`n========== SQL SERVER DETAILS ==========" -ForegroundColor Cyan
+$sqlInstances = Get-Service -Name "MSSQL`$*","MSSQLSERVER" -ErrorAction SilentlyContinue
+if ($sqlInstances) {
+    foreach ($inst in $sqlInstances) {
+        Write-Host "  Instance: $($inst.Name) — Status: $($inst.Status)" -ForegroundColor Red
+    }
+    $sqlKeys = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server" -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -match "^\d+$" }
+    foreach ($k in $sqlKeys) {
+        $setup = Get-ItemProperty "$($k.PSPath)\MSSQLServer\CurrentVersion" -ErrorAction SilentlyContinue
+        if ($setup) { Write-Host "  Version: $($setup.CurrentVersion)" -ForegroundColor Yellow }
+    }
+} else {
+    Write-Host "  SQL Server not installed" -ForegroundColor Green
+}
+
+Write-Host "`n========== INSTALLED BROWSERS ==========" -ForegroundColor Cyan
+$browsers = @(
+    @{ Path = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"; Name = "Google Chrome" },
+    @{ Path = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"; Name = "Google Chrome (x86)" },
+    @{ Path = "${env:ProgramFiles}\Mozilla Firefox\firefox.exe"; Name = "Mozilla Firefox" },
+    @{ Path = "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe"; Name = "Mozilla Firefox (x86)" },
+    @{ Path = "${env:ProgramFiles}\BraveSoftware\Brave-Browser\Application\brave.exe"; Name = "Brave" },
+    @{ Path = "${env:LocalAppData}\Microsoft\Edge\Application\msedge.exe"; Name = "Microsoft Edge" }
+)
+foreach ($b in $browsers) {
+    if (Test-Path $b.Path) {
+        $ver = (Get-Item $b.Path).VersionInfo.FileVersion
+        Write-Host "  [FOUND] $($b.Name) — v$ver" -ForegroundColor Yellow
+    }
+}
+
+Write-Host "`n========== WSL CHECK ==========" -ForegroundColor Cyan
+$wsl = Get-Service LxssManager -ErrorAction SilentlyContinue
+if ($wsl -and $wsl.Status -eq "Running") {
+    Write-Host "  WSL is running" -ForegroundColor Red
+    try { $distros = wsl --list --quiet 2>$null; if ($distros) { $distros | ForEach-Object { Write-Host "    Distro: $_" -ForegroundColor Yellow } } } catch {}
+} else {
+    Write-Host "  WSL not running" -ForegroundColor Green
+}
+
+Write-Host "`n========== CHOCOLATEY CHECK ==========" -ForegroundColor Cyan
+if (Get-Command choco -ErrorAction SilentlyContinue) {
+    Write-Host "  Chocolatey is installed" -ForegroundColor Red
+    choco list --local-only 2>$null | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+} else {
+    Write-Host "  Chocolatey not installed" -ForegroundColor Green
+}
+
+Write-Host "`n========== LISTENING PORTS (non-standard) ==========" -ForegroundColor Cyan
+Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.LocalPort -notin @(135,139,389,445,636,3389,5985,88,53,464,9389) } |
+    Sort-Object LocalPort -Unique |
+    ForEach-Object {
+        $proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+        Write-Host "  :$($_.LocalPort) — $proc (PID $($_.OwningProcess))" -ForegroundColor Yellow
+    }
+```
+
+</details>
+
+<details>
+<summary>Disable Unwanted Programs & Services</summary>
+
+```powershell
+# ============================================================
+#  DISABLE: Stop and disable chosen services
+#  Comment out any lines you want to KEEP running
+# ============================================================
+
+$toDisable = @(
+    # Web servers
+    "W3SVC",            # IIS Web Server
+    "WAS",              # IIS Process Activation
+    "IISADMIN",         # IIS Admin
+    "FTPSVC",           # FTP Server
+    # SQL Server — uncomment ONLY if SQL is not a scored service
+    # "MSSQLSERVER",    # SQL Server (Default)
+    # "SQLSERVERAGENT", # SQL Server Agent
+    # "SQLBrowser",     # SQL Server Browser
+    # Remote access
+    "TlntSvr",          # Telnet
+    "RemoteRegistry",   # Remote Registry
+    "SNMP",             # SNMP
+    "RasMan",           # Remote Access
+    # WSL / containers
+    "LxssManager",      # WSL
+    # "Docker*",        # Docker
+    # Misc
+    "Spooler",          # Print Spooler
+    "WMPNetworkSvc",    # Windows Media Sharing
+    "XblGameSave"       # Xbox Live
+)
+
+Write-Host "`n========== DISABLING SERVICES ==========" -ForegroundColor Cyan
+foreach ($name in $toDisable) {
+    $services = Get-Service -Name $name -ErrorAction SilentlyContinue
+    foreach ($svc in $services) {
+        try {
+            if ($svc.Status -eq "Running") { Stop-Service -Name $svc.Name -Force -ErrorAction Stop }
+            Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction Stop
+            Write-Host "  [DISABLED] $($svc.Name)" -ForegroundColor Green
+        } catch {
+            Write-Host "  [FAILED] $($svc.Name) — $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+# Uninstall Chocolatey if present
+if (Get-Command choco -ErrorAction SilentlyContinue) {
+    Write-Host "`n  Removing Chocolatey..." -ForegroundColor Yellow
+    try {
+        $chocoPath = "$env:ProgramData\chocolatey"
+        Remove-Item -Path $chocoPath -Recurse -Force -ErrorAction Stop
+        [System.Environment]::SetEnvironmentVariable("ChocolateyInstall", $null, "Machine")
+        Write-Host "  [REMOVED] Chocolatey" -ForegroundColor Green
+    } catch {
+        Write-Host "  [FAILED] Chocolatey removal — $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Disable WSL feature
+$wsl = Get-Service LxssManager -ErrorAction SilentlyContinue
+if ($wsl) {
+    Write-Host "`n  Disabling WSL feature..." -ForegroundColor Yellow
+    try {
+        Disable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -NoRestart -ErrorAction Stop
+        Write-Host "  [DISABLED] WSL feature" -ForegroundColor Green
+    } catch {
+        Write-Host "  [FAILED] WSL disable — $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+Write-Host "`n[+] Done. Review output above for failures." -ForegroundColor Cyan
+```
+
+</details>
+
+<details>
+<summary>Ansible Setup — WinRM, install, inventory, playbooks</summary>
+
+#### Enable WinRM on each Windows machine (required before Ansible can connect)
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\Enable-WinRM.ps1
+```
+
+#### Manual WinRM enable methods (if script fails)
+
+**Quick enable (HTTP, port 5985):**
+```powershell
+Enable-PSRemoting -Force -SkipNetworkProfileCheck
+winrm quickconfig -q
+```
+
+**Enable with HTTPS (port 5986):**
+```powershell
+$cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\LocalMachine\My
+winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$env:COMPUTERNAME`";CertificateThumbprint=`"$($cert.Thumbprint)`"}"
+New-NetFirewallRule -DisplayName "WinRM HTTPS" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow
+```
+
+**Enable via service only (no listener config):**
+```powershell
+Set-Service WinRM -StartupType Automatic
+Start-Service WinRM
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
+```
+
+**Allow unencrypted (use only if HTTPS isn't an option):**
+```powershell
+winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+winrm set winrm/config/service/auth '@{Basic="true"}'
+```
+
+**Firewall rules:**
+```powershell
+New-NetFirewallRule -DisplayName "WinRM HTTP" -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow
+New-NetFirewallRule -DisplayName "WinRM HTTPS" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow
+```
+
+#### Test WinRM from a remote machine
+
+**From another Windows machine:**
+```powershell
+Test-WSMan -ComputerName <TARGET_IP>
+Test-WSMan -ComputerName <TARGET_IP> -UseSSL -ErrorAction SilentlyContinue
+$cred = Get-Credential
+Test-WSMan -ComputerName <TARGET_IP> -Authentication Negotiate -Credential $cred
+Enter-PSSession -ComputerName <TARGET_IP> -Credential $cred
+Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock { hostname }
+```
+
+**From Linux (Ansible control node):**
+```bash
+nc -zv <TARGET_IP> 5985
+nc -zv <TARGET_IP> 5986
+ansible <TARGET_IP> -i "<TARGET_IP>," -m win_ping \
+  -e "ansible_user=Administrator ansible_password=<PASS> ansible_connection=winrm ansible_port=5985 ansible_winrm_transport=ntlm ansible_winrm_server_cert_validation=ignore"
+curl -s http://<TARGET_IP>:5985/wsman
+```
+
+**Bulk test all machines:**
+```powershell
+$machines = @("10.0.0.1","10.0.0.2","10.0.0.3")
+foreach ($m in $machines) {
+    $result = Test-WSMan -ComputerName $m -ErrorAction SilentlyContinue
+    if ($result) {
+        Write-Host "[OK] $m — WinRM reachable" -ForegroundColor Green
+    } else {
+        Write-Host "[FAIL] $m — WinRM not reachable" -ForegroundColor Red
+    }
+}
+```
+
+#### Install Ansible (On Ubuntu Control Node)
 ```bash
 sudo apt update && sudo apt install python3-pip -y
 python3 -m pip install --user ansible pywinrm
 echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.bashrc
 source ~/.bashrc
 ```
-</details>
 
-<details>
-<summary>Configure inventory & run playbook</summary>
+#### Configure inventory & run playbook
 
 ```bash
 cd /path/to/ccdc2026/Platform-Windows/ansible
@@ -1391,96 +1948,524 @@ roles:
 ```bash
 ansible-playbook -i inventory/inventory.ini playbook.yml
 ```
+
 </details>
 
----
-
-## Step 4: Log Analysis
-
 <details>
-<summary>Option A: Simple PowerShell (Recommended for Qualifiers)</summary>
+<summary>RDP Commands</summary>
 
 ```powershell
-# Run all detection (recent events, failed logons, hidden files, connections, recent processes)
-.\scripts\IncidentResponse.ps1
+# Check if RDP is enabled on a remote machine (port test)
+Test-NetConnection -ComputerName <TARGET_IP> -Port 3389
 
-# Or run individually:
-.\scripts\IncidentResponse.ps1 -Function Get-RecentSecurityEvents
-.\scripts\IncidentResponse.ps1 -Function Search-FailedLogons
+# Bulk check which machines have RDP enabled
+$machines = @("10.0.0.1","10.0.0.2","10.0.0.3")
+foreach ($m in $machines) {
+    $r = Test-NetConnection -ComputerName $m -Port 3389 -WarningAction SilentlyContinue
+    if ($r.TcpTestSucceeded) { Write-Host "[OK] $m — RDP open" -ForegroundColor Green }
+    else                     { Write-Host "[FAIL] $m — RDP closed" -ForegroundColor Red }
+}
+
+# Check RDP settings on a remote machine via WinRM
+Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock {
+    $rdp = Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections
+    if ($rdp.fDenyTSConnections -eq 0) { Write-Host "RDP: ENABLED" -ForegroundColor Green }
+    else { Write-Host "RDP: DISABLED" -ForegroundColor Red }
+}
+
+# Enable RDP on a remote machine via WinRM
+Invoke-Command -ComputerName <TARGET_IP> -Credential $cred -ScriptBlock {
+    Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+    Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+    Write-Host "[+] RDP enabled" -ForegroundColor Green
+}
 ```
+
 </details>
 
 <details>
-<summary>Option B: LogonTracer (Regionals)</summary>
+<summary>Sysmon Commands</summary>
 
-```bash
-cd Platform-Windows/ansible/logontracer
-nano inventory/hosts.ini
-ansible-playbook -i inventory/hosts.ini setup/full_setup.yml
+```powershell
+# Check if Sysmon is running
+Get-Service Sysmon64
+
+# Check Sysmon config
+& C:\Sysinternals\Sysmon64.exe -c
+
+# Restart Sysmon if stopped
+Start-Service Sysmon64
+
+# Update Sysmon config
+& C:\Sysinternals\Sysmon64.exe -c C:\path\to\new-config.xml
 ```
-</details>
 
----
-
-## Reference
-
-<details>
-<summary>Ansible Roles Summary</summary>
-
-| Role | What It Does | Risk |
-|------|--------------|------|
-| `sysinternal` | Install Firefox, Nmap, Wireshark, Sysinternals | SAFE |
-| `kill ssh` | Kill SSH, uninstall OpenSSH, block ports 22/2222 | SAFE |
-| `list-process` | List running processes, save to JSON | SAFE |
-| `create-team-accounts` | Create blueteam + SirTempleton users | SAFE |
-| `rotate-user-creds` | Rotate local passwords, export CSV | RISKY |
-| `rotate-domain-acc` | Rotate domain passwords | RISKY |
-| `Install-win2ban` | Install IPBan intrusion prevention | MODERATE |
 </details>
 
 <details>
-<summary>Manual Scripts Reference</summary>
+<summary>Enable Defender (Local, No GPO Needed)</summary>
 
-| Script | Path |
-|--------|------|
-| Kill Malware | `scripts\KillKnownMalwareProceses.ps1` |
-| Export Tasks | `scripts\exportScheduled.ps1` |
-| Incident Response | `scripts\IncidentResponse.ps1` (runs all detection) |
-| Local Pass Rotate | `scripts\LocalPassRotation.ps1` |
-| Domain Pass Rotate | `scripts\RotateDomainPass.ps1` |
-| File Watcher | `scripts\CreateFileWatcher.ps1` |
-| OU Permissions | `scripts\GetOUPermissions.ps1` (DC only) |
-| Enable RDP | `scripts\enableRDP.ps1` |
-| Harden GPO | `scripts\Harden-GPO.ps1` (DC only) |
-| Enable WinRM | `scripts\Enable-WinRM.ps1` |
-| AD Installer | `scripts\AD_Installer.ps1` |
-| CA Installer | `scripts\CA_Enterprise_Installer.ps1` |
+```powershell
+# ── Preflight checks ─────────────────────────────────────────────────────────
+Write-Host "=== Preflight ===" -ForegroundColor Cyan
 
-All paths relative to `Platform-Windows\`
+# Binaries exist?
+# WinDefend service exists?
+$defSvc = Get-Service WinDefend -ErrorAction SilentlyContinue
+if (-not $defSvc) {
+    Write-Host "  WinDefend service:       MISSING" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "[!] Defender is not installed. Run these manually (slow, may impact services):" -ForegroundColor Red
+    Write-Host "      Install-WindowsFeature -Name Windows-Defender -IncludeManagementTools  # Server only" -ForegroundColor Yellow
+    Write-Host "      sfc /scannow" -ForegroundColor Yellow
+    Write-Host "      DISM /Online /Cleanup-Image /RestoreHealth" -ForegroundColor Yellow
+    Write-Host "    Then re-run this script." -ForegroundColor Red
+    Write-Host ""
+    return
+}
+Write-Host "  WinDefend service:       Present ($($defSvc.Status))" -ForegroundColor $(if($defSvc.Status -eq 'Running'){'Green'}else{'Yellow'})
+
+# Engine binary exists? (check actual path from service, not hardcoded)
+$imgPath = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend" -Name ImagePath -EA SilentlyContinue).ImagePath -replace '"',''
+$engExists = $imgPath -and (Test-Path $imgPath)
+Write-Host "  Engine binary:           $(if($engExists){'OK'}else{'MISSING'}) ($imgPath)" -ForegroundColor $(if($engExists){'Green'}else{'Red'})
+if (-not $engExists) {
+    Write-Host ""
+    Write-Host "[!] Defender binary missing or corrupted. Run these manually (slow, may impact services):" -ForegroundColor Red
+    Write-Host "      sfc /scannow" -ForegroundColor Yellow
+    Write-Host "      DISM /Online /Cleanup-Image /RestoreHealth" -ForegroundColor Yellow
+    Write-Host "    Then re-run this script." -ForegroundColor Red
+    Write-Host ""
+    return
+}
+
+# Feature installed? (Server only — silently skips on workstations)
+$feat = Get-WindowsFeature -Name Windows-Defender* -ErrorAction SilentlyContinue
+if ($feat -and $feat.InstallState -ne 'Installed') {
+    Write-Host "  Windows-Defender feature: $($feat.InstallState)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "[!] Defender feature not installed. Run manually (may require reboot):" -ForegroundColor Red
+    Write-Host "      Install-WindowsFeature -Name Windows-Defender -IncludeManagementTools" -ForegroundColor Yellow
+    Write-Host "    Then re-run this script." -ForegroundColor Red
+    Write-Host ""
+    return
+} elseif ($feat) {
+    Write-Host "  Windows-Defender feature: $($feat.InstallState)" -ForegroundColor Green
+}
+
+# Services
+foreach ($sn in @("WinDefend","WdNisSvc")) {
+    $st = (sc.exe query $sn 2>&1 | Select-String "STATE").ToString().Trim()
+    Write-Host "  ${sn}: $st" -ForegroundColor $(if($st -match 'RUNNING'){'Green'}else{'Yellow'})
+}
+
+# Drivers
+foreach ($dn in @("WdFilter","WdBoot","WdNisDrv")) {
+    $dv = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$dn" -Name Start -EA SilentlyContinue).Start
+    $disabled = $dv -eq 4
+    Write-Host "  Driver ${dn}: Start=$dv$(if($disabled){' (DISABLED)'})" -ForegroundColor $(if($disabled){'Red'}else{'Green'})
+}
+
+# Policy disable flags
+$polDis = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -EA SilentlyContinue).DisableAntiSpyware
+$locDis = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows Defender" -EA SilentlyContinue).DisableAntiSpyware
+if ($polDis -eq 1) { Write-Host "  [!] Policy DisableAntiSpyware = 1 (will fix)" -ForegroundColor Red }
+if ($locDis -eq 1) { Write-Host "  [!] Local DisableAntiSpyware = 1 (will fix)" -ForegroundColor Red }
+
+# Exclusions planted
+$mp = Get-MpPreference -ErrorAction SilentlyContinue
+$exTotal = (@($mp.ExclusionPath) + @($mp.ExclusionProcess) + @($mp.ExclusionExtension) + @($mp.ExclusionIpAddress) | Where-Object { $_ }).Count
+Write-Host "  Exclusions planted:      $exTotal" -ForegroundColor $(if($exTotal -eq 0){'Green'}else{'Red'})
+
+Write-Host ""
+
+# ── Fix sabotage ─────────────────────────────────────────────────────────────
+
+# Reset ACLs on Defender service keys
+$svcKeys = @(
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdNisSvc",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdFilter",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdNisDrv",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\WdBoot",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\SecurityHealthService",
+    "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"
+)
+foreach ($key in $svcKeys) {
+    if (Test-Path $key) {
+        try {
+            $acl = New-Object System.Security.AccessControl.RegistrySecurity
+            $acl.SetAccessRuleProtection($false, $true)
+            $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
+                "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+            $acl.AddAccessRule($rule)
+            $rule2 = New-Object System.Security.AccessControl.RegistryAccessRule(
+                "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+            $acl.AddAccessRule($rule2)
+            Set-Acl -Path $key -AclObject $acl -ErrorAction Stop
+        } catch {}
+    }
+}
+
+# Re-enable Defender drivers
+$drivers = @{ "WdFilter" = 0; "WdNisDrv" = 3; "WdBoot" = 0 }
+foreach ($drv in $drivers.GetEnumerator()) {
+    $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$($drv.Key)"
+    if (Test-Path $path) {
+        $cur = (Get-ItemProperty $path -Name Start -ErrorAction SilentlyContinue).Start
+        if ($cur -eq 4) { Set-ItemProperty $path -Name Start -Value $drv.Value }
+    }
+}
+
+# Set services to auto-start
+$services = @("WinDefend", "WdNisSvc", "SecurityHealthService", "wscsvc")
+foreach ($svc in $services) { sc.exe config $svc start= auto 2>&1 | Out-Null }
+
+# Fix ELAM
+bcdedit /deletevalue "{current}" disableintegritycheck 2>&1 | Out-Null
+bcdedit /set "{current}" integrityservices enable 2>&1 | Out-Null
+
+# ── Enable Defender locally (replaces what GPO would do) ─────────────────────
+
+# Remove local disable keys
+$disableKeys = @(
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiSpyware" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender"; Name = "DisableAntiVirus" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring" }
+)
+foreach ($entry in $disableKeys) {
+    Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
+}
+
+# Set policy-level registry keys to enable Defender (what GPO normally does)
+$polKeys = @(
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiSpyware"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiVirus"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableOnAccessProtection"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableScanOnRealtimeEnable"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableIOAVProtection"; Value = 0 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet"; Name = "SpynetReporting"; Value = 2 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine"; Name = "MpEnablePus"; Value = 1 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Features"; Name = "TamperProtection"; Value = 5 },
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions"; Name = "DisableAutoExclusions"; Value = 1 }
+)
+foreach ($k in $polKeys) {
+    New-Item -Path $k.Path -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path $k.Path -Name $k.Name -Value $k.Value -Type DWord -Force
+}
+
+# ── Start services ───────────────────────────────────────────────────────────
+foreach ($svc in $services) { net start $svc 2>&1 | Out-Null }
+Start-Sleep -Seconds 3
+
+# If service still won't start, try MpCmdRun -wdenable
+if ((Get-Service WinDefend -ErrorAction SilentlyContinue).Status -ne 'Running') {
+    Write-Host "[-] WinDefend not running — trying MpCmdRun -wdenable" -ForegroundColor Yellow
+    & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -wdenable 2>&1 | Out-Null
+    Start-Service WinDefend -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+}
+
+# Re-enable Defender scheduled tasks
+Get-ScheduledTask -TaskPath "\Microsoft\Windows\Windows Defender\*" -ErrorAction SilentlyContinue |
+    Enable-ScheduledTask -ErrorAction SilentlyContinue
+
+# Force-enable settings the service may not pick up from registry alone
+Set-MpPreference -DisableBehaviorMonitoring $false -ErrorAction SilentlyContinue
+Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
+Set-MpPreference -DisableIOAVProtection $false -ErrorAction SilentlyContinue
+
+# ── ASR: Block credential stealing from LSASS (immediate, no reboot) ─────────
+try {
+    Add-MpPreference -AttackSurfaceReductionRules_Ids 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop
+    Write-Host "[+] ASR rule enabled: Block credential stealing from LSASS" -ForegroundColor Green
+} catch {
+    Write-Host "[!] ASR LSASS rule failed (Defender may not be fully functional yet): $_" -ForegroundColor Yellow
+}
+
+# ── Nuke exclusions ──────────────────────────────────────────────────────────
+
+# reg.exe force-clear all exclusion keys (works even with locked ACLs / service down)
+@(
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Extensions",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\TemporaryPaths",
+    "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\IpAddresses",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Processes",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Extensions",
+    "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\TemporaryPaths"
+) | ForEach-Object { reg.exe delete $_ /va /f 2>&1 | Out-Null }
+Write-Host "[+] Cleared all exclusion registry keys via reg.exe" -ForegroundColor Green
+
+# Also clean via MpPreference (clears WMI store the cmdlet reads from)
+$prefs = Get-MpPreference -ErrorAction SilentlyContinue
+if ($prefs) {
+    @($prefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionPath $_ -ErrorAction SilentlyContinue }
+    @($prefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionProcess $_ -ErrorAction SilentlyContinue }
+    @($prefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionExtension $_ -ErrorAction SilentlyContinue }
+    @($prefs.ExclusionIpAddress) | Where-Object { $_ } | ForEach-Object { Remove-MpPreference -ExclusionIpAddress $_ -ErrorAction SilentlyContinue }
+    Write-Host "[+] Cleared exclusions via MpPreference" -ForegroundColor Green
+}
+
+# ── Update and scan ──────────────────────────────────────────────────────────
+Update-MpSignature -ErrorAction SilentlyContinue
+Start-MpScan -ScanType QuickScan -ErrorAction SilentlyContinue
+
+# ── Verify ───────────────────────────────────────────────────────────────────
+$s = Get-MpComputerStatus -ErrorAction SilentlyContinue
+Write-Host ""
+Write-Host "=== Defender Status ===" -ForegroundColor Cyan
+if ($s) {
+    Write-Host "  AMServiceEnabled:        $($s.AMServiceEnabled)"          -ForegroundColor $(if($s.AMServiceEnabled){'Green'}else{'Red'})
+    Write-Host "  RealTimeProtection:      $($s.RealTimeProtectionEnabled)" -ForegroundColor $(if($s.RealTimeProtectionEnabled){'Green'}else{'Red'})
+    Write-Host "  BehaviorMonitor:         $($s.BehaviorMonitorEnabled)"    -ForegroundColor $(if($s.BehaviorMonitorEnabled){'Green'}else{'Red'})
+    Write-Host "  OnAccessProtection:      $($s.OnAccessProtectionEnabled)" -ForegroundColor $(if($s.OnAccessProtectionEnabled){'Green'}else{'Red'})
+    Write-Host "  IoavProtection:          $($s.IoavProtectionEnabled)"     -ForegroundColor $(if($s.IoavProtectionEnabled){'Green'}else{'Red'})
+    Write-Host "  TamperProtection:        $($s.IsTamperProtected)"        -ForegroundColor $(if($s.IsTamperProtected){'Green'}else{'Red'})
+    Write-Host "  AntivirusSignatureAge:   $($s.AntivirusSignatureAge) days" -ForegroundColor $(if($s.AntivirusSignatureAge -le 1){'Green'}else{'Yellow'})
+} else {
+    Write-Host "  [!] Get-MpComputerStatus failed — Defender may not be installed" -ForegroundColor Red
+}
+
+# Check ASR LSASS rule
+$asrPrefs = Get-MpPreference -ErrorAction SilentlyContinue
+$asrIds = $asrPrefs.AttackSurfaceReductionRules_Ids
+$asrActions = $asrPrefs.AttackSurfaceReductionRules_Actions
+$lsassRuleId = "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2"
+$lsassEnabled = $false
+if ($asrIds -and $asrActions) {
+    $lsassIdx = [array]::IndexOf($asrIds, $lsassRuleId)
+    if ($lsassIdx -ge 0) { $lsassEnabled = ($asrActions[$lsassIdx] -eq 1) }
+}
+Write-Host "  ASR LSASS Protection:    $lsassEnabled" -ForegroundColor $(if($lsassEnabled){'Green'}else{'Red'})
+Write-Host ""
+
+# Check remaining exclusions
+$finalPrefs = Get-MpPreference -ErrorAction SilentlyContinue
+$exCount = (@($finalPrefs.ExclusionPath) + @($finalPrefs.ExclusionProcess) + @($finalPrefs.ExclusionExtension) |
+    Where-Object { $_ }).Count
+if ($exCount -gt 0) {
+    Write-Host "[WARN] $exCount exclusions still present:" -ForegroundColor Yellow
+    @($finalPrefs.ExclusionPath)      | Where-Object { $_ } | ForEach-Object { Write-Host "  Path: $_" -ForegroundColor Yellow }
+    @($finalPrefs.ExclusionProcess)   | Where-Object { $_ } | ForEach-Object { Write-Host "  Proc: $_" -ForegroundColor Yellow }
+    @($finalPrefs.ExclusionExtension) | Where-Object { $_ } | ForEach-Object { Write-Host "  Ext:  $_" -ForegroundColor Yellow }
+} else {
+    Write-Host "[OK] No exclusions remain" -ForegroundColor Green
+}
+
+if ($s -and $s.AMServiceEnabled -and $s.RealTimeProtectionEnabled) {
+    Write-Host "[OK] Defender is fully operational" -ForegroundColor Green
+} else {
+    Write-Host "[FAIL] Defender is NOT fully operational — try reboot, then sfc /scannow" -ForegroundColor Red
+}
+```
+
 </details>
 
 <details>
-<summary>Important Event IDs</summary>
+<summary>Defender Quick Reference</summary>
 
-| ID | Meaning |
-|----|---------|
-| 4624 | Successful logon |
-| 4625 | Failed logon |
-| 4720 | Account created |
-| 4722 | Account enabled |
-| 4725 | Account deleted |
-| 4698 | Scheduled task created |
-| 4699 | Scheduled task deleted |
-| 4768 | TGT requested (kerberoast/golden ticket) |
-| 4724 | Password reset |
-| 4946 | Firewall rule added |
+```powershell
+# ── Status ───────────────────────────────────────────────────────────────────
+Get-MpComputerStatus                          # full status dashboard
+Get-MpComputerStatus | Select-Object AMServiceEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled, IsTamperProtected, AntivirusSignatureAge
+
+# ── Scans ────────────────────────────────────────────────────────────────────
+Start-MpScan -ScanType QuickScan             # active processes + startup locations
+
+# Targeted scans — common red team drop zones (run these, not full scan)
+Start-MpScan -ScanPath "C:\Windows\System32" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\Windows\Temp" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\Windows\Tasks" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\Users" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\ProgramData" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\Windows\SysWOW64" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\Perflogs" -ScanType CustomScan
+Start-MpScan -ScanPath "$env:APPDATA" -ScanType CustomScan
+
+# Scan all running processes (catches in-memory malware that's already loaded)
+Get-Process | Where-Object { $_.Path } | Select-Object -ExpandProperty Path -Unique |
+    ForEach-Object { Start-MpScan -ScanPath $_ -ScanType CustomScan -ErrorAction SilentlyContinue }
+
+# Scan startup/persistence locations
+Start-MpScan -ScanPath "C:\Windows\System32\Tasks" -ScanType CustomScan
+Start-MpScan -ScanPath "C:\Windows\System32\GroupPolicy" -ScanType CustomScan
+
+# Queue all scans in background (Defender only runs one at a time)
+Start-Job -ScriptBlock {
+    Start-MpScan -ScanType QuickScan
+    Start-MpScan -ScanPath "C:\Windows\System32" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Windows\Temp" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Windows\Tasks" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Users" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\ProgramData" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Perflogs" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Windows\SysWOW64" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Windows\System32\Tasks" -ScanType CustomScan
+    Start-MpScan -ScanPath "C:\Windows\System32\GroupPolicy" -ScanType CustomScan
+}
+Get-Job                # check progress
+Receive-Job -Id 1      # see output when done
+
+# Full scan — avoid during competition, takes 30-60+ min and tanks performance
+# Start-MpScan -ScanType FullScan
+
+# ── Detections & Quarantine ──────────────────────────────────────────────────
+Get-MpThreatDetection | Format-List *                    # recent scan results (detailed)
+Get-MpThreatDetection | Select-Object ThreatID, Resources, InitialDetectionTime | Format-List  # summary
+Get-MpThreat | Select-Object ThreatName, Resources, IsActive | Format-List   # quarantine + resolved
+Remove-MpThreat                                          # remove all active threats
+
+# ── Signatures ───────────────────────────────────────────────────────────────
+Update-MpSignature                            # pull latest definitions
+(Get-MpComputerStatus).AntivirusSignatureAge  # days since last update (0 = today)
+
+# ── Exclusions (audit + nuke) ────────────────────────────────────────────────
+# List current exclusions (red team loves planting these)
+$p = Get-MpPreference
+$p.ExclusionPath; $p.ExclusionProcess; $p.ExclusionExtension; $p.ExclusionIpAddress
+
+# Remove specific exclusion
+Remove-MpPreference -ExclusionProcess "powershell.exe"
+Remove-MpPreference -ExclusionExtension ".exe"
+Remove-MpPreference -ExclusionPath "C:\Tools"
+
+# ── Settings ─────────────────────────────────────────────────────────────────
+Set-MpPreference -DisableBehaviorMonitoring $false       # enable behavior monitoring
+Set-MpPreference -DisableRealtimeMonitoring $false       # enable real-time protection
+Set-MpPreference -PUAProtection 1                        # block potentially unwanted apps
+Set-MpPreference -SubmitSamplesConsent 2                 # send samples to cloud (SendAllSamples)
+
+# ── Service Control ──────────────────────────────────────────────────────────
+sc.exe start WinDefend                        # start service
+sc.exe stop WinDefend                         # stop (may fail if tamper protected)
+sc.exe config WinDefend start= auto           # set to auto-start
+& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -wdenable   # nuclear re-enable
+
+# ── Scheduled Tasks ──────────────────────────────────────────────────────────
+Get-ScheduledTask -TaskPath "\Microsoft\Windows\Windows Defender\*"   # list tasks + state
+Get-ScheduledTask -TaskPath "\Microsoft\Windows\Windows Defender\*" | Enable-ScheduledTask  # re-enable all
+```
+
 </details>
 
 <details>
-<summary>SOC Tools (If Requested)</summary>
+<summary>Block EXEs from Running</summary>
 
-| Tool | Script |
-|------|--------|
-| Wazuh Agent | `Service-SOC\Wazuh\0-Scripts\WIN_agent_install.ps1` (edit IP first) |
-| Graylog Sidecar | `Service-SOC\Graylog\0-Scripts\WIN - (Sidecar) winlogbeat.ps1` |
+```powershell
+# Add exe names to block — Windows will refuse to run these
+$blocked = @("malware.exe", "beacon.exe", "nc.exe", "nc64.exe", "mimikatz.exe", "psexec.exe")
+
+# Uses Software Restriction Policy (Disallowed = blocked from executing)
+$basePath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"
+New-Item -Path $basePath -Force -ErrorAction SilentlyContinue | Out-Null
+Set-ItemProperty -Path $basePath -Name "DefaultLevel" -Value 262144 -Type DWord -Force  # default=Unrestricted
+Set-ItemProperty -Path $basePath -Name "TransparentEnabled" -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $basePath -Name "PolicyScope" -Value 0 -Type DWord -Force
+
+$i = 0
+foreach ($exe in $blocked) {
+    $rulePath = "$basePath\0\Paths\{$(New-Guid)}"
+    New-Item -Path $rulePath -Force | Out-Null
+    Set-ItemProperty -Path $rulePath -Name "ItemData" -Value $exe -Type String -Force
+    Set-ItemProperty -Path $rulePath -Name "SaferFlags" -Value 0 -Type DWord -Force
+    Write-Host "[+] Blocked: $exe" -ForegroundColor Green
+    $i++
+}
+
+Write-Host "`n[*] $i executables blocked via Software Restriction Policy" -ForegroundColor Cyan
+```
+
+</details>
+
+<details>
+<summary>Useful Commands Cheat Sheet</summary>
+
+#### Disable WinRM (kill sessions, stop, block firewall, prevent startup)
+```powershell
+Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue | ForEach-Object { Remove-WSManInstance -ResourceURI shell -SelectorSet @{ShellId=$_.ShellId} }
+Stop-Service WinRM -Force -ErrorAction SilentlyContinue
+Set-Service WinRM -StartupType Disabled -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Block WinRM Inbound" -Direction Inbound -Protocol TCP -LocalPort 5985,5986 -Action Block -ErrorAction SilentlyContinue
+Write-Host "[+] WinRM killed, disabled, and blocked" -ForegroundColor Green
+```
+
+#### Kick RDP Sessions
+```powershell
+# Kick all disconnected/active RDP sessions
+qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|Disc")) { logoff $matches[1] } }
+# Kick a specific session (get ID from qwinsta)
+logoff <SESSION_ID>
+```
+
+#### Sigcheck (verify signed binaries)
+```powershell
+C:\Sysinternals\Sigcheck64.exe -u -e C:\Windows\System32
+```
+
+#### Manual Sysmon Management
+```powershell
+# Check status
+sc query Sysmon64
+# Update config
+C:\Sysinternals\Sysmon64.exe -c "$env:TEMP\sc.xml"
+# Uninstall
+C:\Sysinternals\Sysmon64.exe -u
+```
+
+#### Legacy Full Sysinternals Install (all tools, no filtering)
+```powershell
+Invoke-WebRequest "https://download.sysinternals.com/files/SysinternalsSuite.zip" -OutFile "$env:TEMP\ss.zip"
+Expand-Archive "$env:TEMP\ss.zip" -DestinationPath "C:\Sysinternals" -Force
+Remove-Item "$env:TEMP\ss.zip"
+reg add "HKCU\Software\Sysinternals" /v EulaAccepted /t REG_DWORD /d 1 /f
+```
+
+#### Manual Hardening (if Harden-GPO.ps1 fails or for non-DC machines)
+```powershell
+# Reset GPOs to default (DC only)
+dcgpofix /target:both
+gpupdate /force
+
+# Disable SMB1
+Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart
+
+# Disable unnecessary services
+gsv RemoteRegistry,TlntSvr,SNMP -ea 0 | spsv -f -pas | Set-Service -st Disabled
+```
+- **Disable LLMNR:** `gpedit.msc -> Computer Config -> Admin Templates -> Network -> DNS Client -> Turn off multicast name resolution -> Enable`
+- **Disable NBT-NS:** `Network adapter -> IPv4 Properties -> Advanced -> WINS -> Disable NetBIOS over TCP/IP`
+- **SMB Signing:** `gpedit.msc -> Computer Config -> Policies -> Security Settings -> Local Policies -> Security Options -> Digitally sign communications (always) = Enabled` (both client and server)
+
+#### Re-enable Local Accounts
+```powershell
+"Guest","Administrator" | ForEach-Object { Enable-LocalUser -Name $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
+```
+
+#### Re-enable AD Accounts (DC only)
+```powershell
+"Guest" | ForEach-Object { Enable-ADAccount -Identity $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
+```
+
+#### Enable SSH
+```powershell
+Remove-NetFirewallRule -DisplayName "Block SSH Inbound" -ErrorAction SilentlyContinue
+Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service sshd -ErrorAction SilentlyContinue
+Write-Host "[+] SSH enabled and started" -ForegroundColor Green
+```
+
+#### Enable WinRM
+```powershell
+Remove-NetFirewallRule -DisplayName "Block WinRM Inbound" -ErrorAction SilentlyContinue
+Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service WinRM -ErrorAction SilentlyContinue
+Write-Host "[+] WinRM enabled and started" -ForegroundColor Green
+```
+
 </details>
