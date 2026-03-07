@@ -2,7 +2,6 @@
 
 # Teleport User Audit / Modification Script
 # No role preview
-# Safe role removal
 # Supports Bare Metal or Podman deployments
 
 set -euo pipefail
