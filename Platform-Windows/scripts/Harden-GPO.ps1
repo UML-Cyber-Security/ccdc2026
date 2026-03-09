@@ -81,6 +81,26 @@ $Domain = (Get-ADDomain).DNSRoot
 $DomainDN = (Get-ADDomain).DistinguishedName
 Write-Setting "Domain: $Domain ($DomainDN)"
 
+# ── Backup existing GPOs ────────────────────────────────────────────────────
+
+Write-Banner "Backing up existing GPOs"
+$ts = Get-Date -Format "yyyyMMdd-HHmmss"
+$exportPath = "C:\GPO-Export-$ts"
+New-Item -Path $exportPath -ItemType Directory -Force | Out-Null
+try {
+    Get-GPO -All | ForEach-Object {
+        Backup-GPO -Guid $_.Id -Path $exportPath -ErrorAction Stop | Out-Null
+        Write-Host "  Backed up: $($_.DisplayName)" -ForegroundColor Gray
+    }
+    Compress-Archive -Path "$exportPath\*" -DestinationPath "$exportPath.zip" -ErrorAction Stop -Force
+    Remove-Item -Path $exportPath -Recurse -Force
+    Write-Setting "All GPOs exported to $exportPath.zip"
+} catch {
+    Write-Fail "GPO backup failed: $_"
+    Write-Host "    Aborting — will NOT reset GPOs without a good backup." -ForegroundColor Red
+    return
+}
+
 # ── Resolve which sections to run ────────────────────────────────────────────
 
 # Safety modes override individual flags
@@ -126,6 +146,10 @@ $summary = @()
 if ($runReset) {
     Write-Banner "GPO Reset (dcgpofix)"
     Write-Warn "Resetting Default Domain Policy and Default Domain Controllers Policy"
+    Get-GPO -All | Where-Object { $_.DisplayName -notin "Default Domain Policy","Default Domain Controllers Policy" } | ForEach-Object {
+        Write-Host "  Removing GPO: $($_.DisplayName)" -ForegroundColor Yellow
+        Remove-GPO -Guid $_.Id -ErrorAction SilentlyContinue
+    }
     "Y","Y" | dcgpofix /target:both 2>&1 | ForEach-Object { Write-Host "    $_" }
     $dcgpofixExit = $LASTEXITCODE
     & gpupdate /force 2>&1 | Out-Null

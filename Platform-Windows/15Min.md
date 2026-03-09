@@ -122,6 +122,11 @@ Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, E
 }} | Format-Table -AutoSize
 ```
 
+**Disable:**
+```powershell
+"Guest","Administrator" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
+```
+
 #### Reset privileged groups to default AD membership
 ```powershell
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -405,21 +410,101 @@ Get-NetFirewallProfile | Format-Table Name, Enabled -AutoSize
 </details>
 
 <details>
-<summary><b>5. Harden GPO (DC only)</b> — Import pre-built GPO backups (audit, password, encryption, Defender, network)</summary>
+<summary><b>5. Harden GPO (DC only)</b> — Backup existing GPOs, reset, apply hardening (audit, password, encryption, Defender, network)</summary>
 
 > [!NOTE]
-> GPO backups were pre-built in the lab using `scripts/Harden-GPO.ps1` and exported with `Backup-GPO`.
-> This imports them — much faster than building GPOs from scratch during competition.
-> **If GPOBackups.zip is not available**, fall back to `scripts/Harden-GPO.ps1` (save it as a .ps1 file and run with `-Safe`).
+> This builds GPOs from scratch on whatever domain you're on — no imports, no migration tables, no domain SID issues.
+> Run with `-Safe` to skip settings that could break services (Kerberos AES-only, LDAP channel binding, script execution policy).
+> Run with `-SuperSafe` for logging + password policy only (zero breakage risk).
+> Also available as a standalone file: `scripts/Harden-GPO.ps1`
 
-#### Option A: GPOBackups.zip is on a USB or local path
 ```powershell
+param(
+    [switch]$All,              # Run everything (default if no flags)
+    [switch]$Reset,            # dcgpofix /target:both
+    [switch]$AuditPolicy,      # Audit logging + PowerShell logging
+    [switch]$PasswordPolicy,   # Password + lockout policy
+    [switch]$ScriptPolicy,     # AllSigned execution policy
+    [switch]$Encryption,       # SMB, Kerberos, NTLM, LDAP
+    [switch]$CredProtection,   # WDigest, anonymous restriction
+    [switch]$NetworkHardening, # LLMNR, NBT-NS, WPAD, NLA for RDP
+    [switch]$SkipReset,        # Run -All but skip GPO reset
+    [Alias("S")]
+    [switch]$Safe,             # Safe mode: skips settings that could break services
+    [Alias("SS")]
+    [switch]$SuperSafe,        # Super-safe: only logging + password policy (zero breakage)
+    [string]$GPOName = "Hardening"
+)
 
-# ── Point this to the extracted GPOBackups folder ───────────────────────────
-$backupPath = "C:\GPOBackups"   # <-- CHANGE to wherever you extracted GPOBackups.zip
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-# ── Backup existing GPOs (safety net) ────────────────────────────────────────
-Import-Module GroupPolicy, ActiveDirectory
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+function Write-Banner { param([string]$Text); Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
+function Write-Setting { param([string]$Text); Write-Host "  [+] $Text" -ForegroundColor Green }
+function Write-Warn    { param([string]$Text); Write-Host "  [!] $Text" -ForegroundColor Yellow }
+function Write-Verify  { param([string]$Text); Write-Host "  [?] $Text" -ForegroundColor Magenta }
+function Write-Fail    { param([string]$Text); Write-Host "  [X] $Text" -ForegroundColor Red; $script:failures += $Text }
+
+$script:failures = @()
+
+function Test-Result {
+    param([string]$Label, $Expected, $Actual)
+    if ("$Actual" -eq "$Expected") {
+        Write-Verify "PASS: $Label (expected=$Expected)"
+    } else {
+        Write-Fail "FAIL: $Label (expected=$Expected, got=$Actual)"
+    }
+}
+
+function Set-RegValue {
+    param(
+        [string]$GPOName,
+        [string]$Key,
+        [string]$ValueName,
+        $Value,
+        [Microsoft.Win32.RegistryValueKind]$Type = [Microsoft.Win32.RegistryValueKind]::DWord
+    )
+    Set-GPRegistryValue -Name $GPOName -Key $Key -ValueName $ValueName -Value $Value -Type $Type | Out-Null
+    Write-Setting "$Key\$ValueName = $Value"
+    try {
+        $readBack = (Get-GPRegistryValue -Name $GPOName -Key $Key -ValueName $ValueName -ErrorAction Stop).Value
+        Test-Result "$Key\$ValueName" $Value $readBack
+    } catch {
+        Write-Fail "FAIL: Could not read back $Key\$ValueName"
+    }
+}
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+
+Write-Banner "Preflight checks"
+
+# Must be Domain Controller
+$os = Get-CimInstance Win32_OperatingSystem
+if ($os.ProductType -ne 2) {
+    Write-Error "This script must run on a Domain Controller (ProductType 2). Current: $($os.ProductType)"
+    exit 1
+}
+Write-Setting "Running on Domain Controller: $($env:COMPUTERNAME)"
+
+# Import required modules
+foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
+    if (-not (Get-Module -ListAvailable -Name $mod)) {
+        Write-Error "Required module '$mod' is not installed."
+        exit 1
+    }
+    Import-Module $mod -ErrorAction Stop
+    Write-Setting "Module loaded: $mod"
+}
+
+$Domain = (Get-ADDomain).DNSRoot
+$DomainDN = (Get-ADDomain).DistinguishedName
+Write-Setting "Domain: $Domain ($DomainDN)"
+
+# ── Backup existing GPOs ────────────────────────────────────────────────────
+
+Write-Banner "Backing up existing GPOs"
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"
 $exportPath = "C:\GPO-Export-$ts"
 New-Item -Path $exportPath -ItemType Directory -Force | Out-Null
@@ -428,33 +513,605 @@ try {
         Backup-GPO -Guid $_.Id -Path $exportPath -ErrorAction Stop | Out-Null
         Write-Host "  Backed up: $($_.DisplayName)" -ForegroundColor Gray
     }
-    Compress-Archive -Path $exportPath -DestinationPath "$exportPath.zip" -ErrorAction Stop -Force
-    Write-Host "[+] All GPOs exported to $exportPath.zip" -ForegroundColor Green
+    Compress-Archive -Path "$exportPath\*" -DestinationPath "$exportPath.zip" -ErrorAction Stop -Force
+    Remove-Item -Path $exportPath -Recurse -Force
+    Write-Setting "All GPOs exported to $exportPath.zip"
 } catch {
-    Write-Host "[X] GPO backup failed: $_" -ForegroundColor Red
+    Write-Fail "GPO backup failed: $_"
     Write-Host "    Aborting — will NOT reset GPOs without a good backup." -ForegroundColor Red
     return
 }
 
-# ── Reset GPOs to defaults (removes any malicious/stale settings) ────────────
+# ── Resolve which sections to run ────────────────────────────────────────────
+
+# Safety modes override individual flags
+if ($SuperSafe) {
+    Write-Banner "Mode: SUPER-SAFE (logging + passwords only)"
+    $runReset            = $false
+    $runAuditPolicy      = $true
+    $runPasswordPolicy   = $true
+    $runScriptPolicy     = $false
+    $runEncryption       = $false
+    $runCredProtection   = $false
+    $runNetworkHardening = $false
+} elseif ($Safe) {
+    Write-Banner "Mode: SAFE (skipping risky settings)"
+    $runReset            = $false
+    $runAuditPolicy      = $true
+    $runPasswordPolicy   = $true
+    $runScriptPolicy     = $false
+    $runEncryption       = $true
+    $runCredProtection   = $true
+    $runNetworkHardening = $true
+} else {
+    $flags = @($Reset, $AuditPolicy, $PasswordPolicy, $ScriptPolicy,
+               $Encryption, $CredProtection, $NetworkHardening, $SkipReset)
+    $anyFlag = $flags | Where-Object { $_ }
+
+    if (-not $anyFlag) { $All = [switch]::Present }
+    if ($SkipReset) { $All = [switch]::Present }
+
+    $runReset            = $All -and -not $SkipReset -or $Reset
+    $runAuditPolicy      = $All -or $AuditPolicy
+    $runPasswordPolicy   = $All -or $PasswordPolicy
+    $runScriptPolicy     = $All -or $ScriptPolicy
+    $runEncryption       = $All -or $Encryption
+    $runCredProtection   = $All -or $CredProtection
+    $runNetworkHardening = $All -or $NetworkHardening
+}
+
+$summary = @()
+
+# ── Reset ────────────────────────────────────────────────────────────────────
+
+if ($runReset) {
+    Write-Banner "GPO Reset (dcgpofix)"
+    Write-Warn "Resetting Default Domain Policy and Default Domain Controllers Policy"
+    Get-GPO -All | Where-Object { $_.DisplayName -notin "Default Domain Policy","Default Domain Controllers Policy" } | ForEach-Object {
+    Write-Host "  Removing GPO: $($_.DisplayName)" -ForegroundColor Yellow
+    Remove-GPO -Guid $_.Id -ErrorAction SilentlyContinue
+}
 "Y","Y" | dcgpofix /target:both 2>&1 | ForEach-Object { Write-Host "    $_" }
-gpupdate /force
+    $dcgpofixExit = $LASTEXITCODE
+    & gpupdate /force 2>&1 | Out-Null
+    $summary += "GPO Reset"
+    Write-Setting "GPO reset complete"
+    Test-Result "dcgpofix exit code" 0 $dcgpofixExit
+}
 
-# ── Import hardened GPOs ─────────────────────────────────────────────────────
-$DomainDN = (Get-ADDomain).DistinguishedName
+# ── Create / Get hardening GPO ───────────────────────────────────────────────
 
-New-GPO -Name "Hardening" -ErrorAction SilentlyContinue
-Import-GPO -BackupGpoName "Hardening" -Path $backupPath -TargetName "Hardening"
-New-GPLink -Name "Hardening" -Target $DomainDN -LinkEnabled Yes -ErrorAction SilentlyContinue
+$needGPO = $runAuditPolicy -or $runScriptPolicy -or $runEncryption -or $runCredProtection -or $runNetworkHardening
 
-Import-GPO -BackupGpoName "Default Domain Policy" -Path $backupPath -TargetName "Default Domain Policy"
+if ($needGPO) {
+    Write-Banner "GPO Setup"
+    $gpo = Get-GPO -Name $GPOName -ErrorAction SilentlyContinue
+    if (-not $gpo) {
+        $gpo = New-GPO -Name $GPOName
+        Write-Setting "Created GPO: $GPOName"
+    } else {
+        Write-Setting "Using existing GPO: $GPOName"
+    }
 
-# Local registry fix (GPO import doesn't do this)
-Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" `
-    -Name "SCENoApplyLegacyAuditPolicy" -Value 0 -Type DWord -Force
+    try {
+        New-GPLink -Name $GPOName -Target $DomainDN -LinkEnabled Yes -ErrorAction Stop | Out-Null
+        Write-Setting "Linked GPO to $DomainDN"
+    } catch {
+        if ($_.Exception.Message -match "already linked|already exists") {
+            Write-Setting "GPO already linked to $DomainDN"
+        } else { throw }
+    }
 
-gpupdate /force
-Write-Host "[+] GPO import complete" -ForegroundColor Green
+    $verifyGpo = Get-GPO -Name $GPOName -ErrorAction SilentlyContinue
+    Test-Result "GPO '$GPOName' exists" $true ($null -ne $verifyGpo)
+    $inheritance = Get-GPInheritance -Target $DomainDN
+    $linked = $inheritance.GpoLinks | Where-Object { $_.DisplayName -eq $GPOName }
+    Test-Result "GPO '$GPOName' linked to domain" $true ($null -ne $linked)
+}
+
+# ── Audit Policy ─────────────────────────────────────────────────────────────
+
+if ($runAuditPolicy) {
+    Write-Banner "Audit Policy"
+
+    Write-Setting "Writing audit policy to GptTmpl.inf"
+    $gpoId = "{$($gpo.Id.ToString().ToUpper())}"
+    $secEditPath = "\\$Domain\SYSVOL\$Domain\Policies\$gpoId\Machine\Microsoft\Windows NT\SecEdit"
+
+    if (-not (Test-Path $secEditPath)) {
+        New-Item -Path $secEditPath -ItemType Directory -Force | Out-Null
+    }
+
+    # 3 = Success and Failure; 0 = No Auditing
+    # Only enable categories that WinStride/Sysmon actually consume
+    $gptTmpl = @"
+[Unicode]
+Unicode=yes
+[Version]
+signature="`$CHICAGO`$"
+Revision=1
+[Event Audit]
+AuditSystemEvents = 3
+AuditLogonEvents = 3
+AuditObjectAccess = 3
+AuditPrivilegeUse = 0
+AuditPolicyChange = 0
+AuditAccountManage = 3
+AuditProcessTracking = 3
+AuditDSAccess = 3
+AuditAccountLogon = 3
+"@
+    $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
+    Write-Setting "GptTmpl.inf written (7 categories enabled, 2 disabled)"
+
+    $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+    $gpoDN = "CN=$gpoId,CN=Policies,CN=System,$DomainDN"
+    $gpoAD = Get-ADObject -Identity $gpoDN -Properties gPCMachineExtensionNames
+    $currentCSE = $gpoAD.gPCMachineExtensionNames
+    if (-not $currentCSE) { $currentCSE = "" }
+    if ($currentCSE -notmatch [regex]::Escape($securityCSE)) {
+        $currentCSE += $securityCSE
+        Set-ADObject -Identity $gpoDN -Replace @{gPCMachineExtensionNames = $currentCSE}
+        Write-Setting "Security CSE registered"
+    } else {
+        Write-Setting "Security CSE already present"
+    }
+
+    $gpoAD = Get-ADObject -Identity $gpoDN -Properties versionNumber
+    $newVer = [int]$gpoAD.versionNumber + 65536
+    Set-ADObject -Identity $gpoDN -Replace @{versionNumber = $newVer}
+    $gptIniPath = "\\$Domain\SYSVOL\$Domain\Policies\$gpoId\GPT.INI"
+    $gptIniContent = Get-Content $gptIniPath -Raw -ErrorAction SilentlyContinue
+    if ($gptIniContent) {
+        $gptIniContent = $gptIniContent -replace "Version=\d+", "Version=$newVer"
+        $gptIniContent | Out-File -FilePath $gptIniPath -Encoding ASCII -Force
+    }
+    Write-Setting "GPO version bumped to $newVer"
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+        -ValueName "SCENoApplyLegacyAuditPolicy" -Value 0
+    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" -Name "SCENoApplyLegacyAuditPolicy" -Value 0 -Type DWord -Force
+    Write-Setting "SCENoApplyLegacyAuditPolicy = 0 (legacy audit enabled)"
+
+    # Only PowerShell logging — Sysmon handles process/cmdline tracking
+    Write-Setting "Configuring registry-based logging"
+
+    # PowerShell Script Block Logging (Event 4104)
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" `
+        -ValueName "EnableScriptBlockLogging" -Value 1
+
+    # PowerShell Module Logging (Event 4103)
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ModuleLogging" `
+        -ValueName "EnableModuleLogging" -Value 1
+    Set-GPRegistryValue -Name $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames" `
+        -ValueName "*" -Value "*" -Type String | Out-Null
+    Write-Setting "  ModuleNames\* = *"
+
+    # Security log size: 1 GB
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows\EventLog\Security" `
+        -ValueName "MaxSize" -Value 1048576
+
+    # Verify audit policy in GptTmpl.inf
+    $verifyInf = Get-Content "$secEditPath\GptTmpl.inf" -ErrorAction SilentlyContinue
+    if ($verifyInf) {
+        $expectedAudit = @{
+            AuditSystemEvents    = "3"
+            AuditLogonEvents     = "3"
+            AuditObjectAccess    = "3"
+            AuditPrivilegeUse    = "0"
+            AuditPolicyChange    = "0"
+            AuditAccountManage   = "3"
+            AuditProcessTracking = "3"
+            AuditDSAccess        = "3"
+            AuditAccountLogon    = "3"
+        }
+        foreach ($cat in $expectedAudit.Keys) {
+            $match = $verifyInf | Where-Object { $_ -match "^\s*$cat\s*=" }
+            if ($match -and $match -match "=\s*(\d+)") { $val = $Matches[1] } else { $val = "MISSING" }
+            Test-Result "Audit $cat" $expectedAudit[$cat] $val
+        }
+    } else {
+        Write-Fail "FAIL: Could not read back GptTmpl.inf for audit verification"
+    }
+
+    $summary += "Audit Policy"
+}
+
+# ── Password Policy ──────────────────────────────────────────────────────────
+
+if ($runPasswordPolicy) {
+    Write-Banner "Password & Lockout Policy"
+
+    $ddpGpo = Get-GPO -Name "Default Domain Policy" -ErrorAction Stop
+    $ddpId = "{$($ddpGpo.Id.ToString().ToUpper())}"
+    $ddpSecEditPath = "\\$Domain\SYSVOL\$Domain\Policies\$ddpId\Machine\Microsoft\Windows NT\SecEdit"
+
+    if (-not (Test-Path $ddpSecEditPath)) {
+        New-Item -Path $ddpSecEditPath -ItemType Directory -Force | Out-Null
+    }
+
+    $ddpInfPath = "$ddpSecEditPath\GptTmpl.inf"
+
+    # Enable MinimumPasswordLength > 14 (required before setting length to 16)
+    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\SAM" `
+        -Name "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord -Force
+    Write-Setting "RelaxMinimumPasswordLengthLimits = 1 (allows MinPasswordLength > 14)"
+
+    Set-GPRegistryValue -Name "Default Domain Policy" `
+        -Key "HKLM\System\CurrentControlSet\Control\SAM" `
+        -ValueName "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord | Out-Null
+    Write-Setting "RelaxMinimumPasswordLengthLimits pushed via Default Domain Policy GPO"
+
+    # NIST SP 800-63B 2024: length-based policy, no composition rules
+    $pwdSettings = [ordered]@{
+        MinimumPasswordLength = 16
+        PasswordHistorySize   = 24
+        MinimumPasswordAge    = 0
+        MaximumPasswordAge    = -1
+        PasswordComplexity    = 0
+        ClearTextPassword     = 0
+        LockoutBadCount       = 10
+        ResetLockoutCount     = 15
+        LockoutDuration       = 15
+    }
+
+    if (Test-Path $ddpInfPath) {
+        $infContent = Get-Content $ddpInfPath -Raw
+    } else {
+        $infContent = @"
+[Unicode]
+Unicode=yes
+[Version]
+signature="`$CHICAGO`$"
+Revision=1
+"@
+    }
+
+    if ($infContent -notmatch '\[System Access\]') {
+        $infContent += "`r`n[System Access]`r`n"
+    }
+
+    foreach ($key in $pwdSettings.Keys) {
+        $val = $pwdSettings[$key]
+        if ($infContent -match "(?m)^\s*$key\s*=") {
+            $infContent = $infContent -replace "(?m)^\s*$key\s*=\s*.*$", "$key = $val"
+        } else {
+            $infContent = $infContent -replace "(\[System Access\])", "`$1`r`n$key = $val"
+        }
+    }
+
+    $infContent | Out-File -FilePath $ddpInfPath -Encoding Unicode -Force
+    foreach ($key in $pwdSettings.Keys) {
+        Write-Setting "$key = $($pwdSettings[$key])"
+    }
+
+    $securityCSE = "[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]"
+    $ddpDN = "CN=$ddpId,CN=Policies,CN=System,$DomainDN"
+    $ddpAD = Get-ADObject -Identity $ddpDN -Properties gPCMachineExtensionNames
+    $currentCSE = $ddpAD.gPCMachineExtensionNames
+    if (-not $currentCSE) { $currentCSE = "" }
+    if ($currentCSE -notmatch [regex]::Escape($securityCSE)) {
+        $currentCSE += $securityCSE
+        Set-ADObject -Identity $ddpDN -Replace @{gPCMachineExtensionNames = $currentCSE}
+        Write-Setting "Security CSE registered on Default Domain Policy"
+    } else {
+        Write-Setting "Security CSE already present on Default Domain Policy"
+    }
+
+    $ddpAD = Get-ADObject -Identity $ddpDN -Properties versionNumber
+    $ddpNewVer = [int]$ddpAD.versionNumber + 65536
+    Set-ADObject -Identity $ddpDN -Replace @{versionNumber = $ddpNewVer}
+    $ddpGptIniPath = "\\$Domain\SYSVOL\$Domain\Policies\$ddpId\GPT.INI"
+    $ddpGptIniContent = Get-Content $ddpGptIniPath -Raw -ErrorAction SilentlyContinue
+    if ($ddpGptIniContent) {
+        $ddpGptIniContent = $ddpGptIniContent -replace "Version=\d+", "Version=$ddpNewVer"
+        $ddpGptIniContent | Out-File -FilePath $ddpGptIniPath -Encoding ASCII -Force
+    }
+    Write-Setting "Default Domain Policy version bumped to $ddpNewVer"
+
+    # NIST SP 800-63B 2024: complexity disabled (no composition rules)
+    Set-ADDefaultDomainPasswordPolicy -Identity $Domain `
+        -MinPasswordLength 16 `
+        -PasswordHistoryCount 24 `
+        -MinPasswordAge ([TimeSpan]::Zero) `
+        -MaxPasswordAge ([TimeSpan]::Zero) `
+        -ComplexityEnabled $false `
+        -LockoutThreshold 10 `
+        -LockoutDuration (New-TimeSpan -Minutes 15) `
+        -LockoutObservationWindow (New-TimeSpan -Minutes 15)
+    Write-Setting "AD attributes set via Set-ADDefaultDomainPasswordPolicy"
+
+    $verifyPwdInf = Get-Content $ddpInfPath -ErrorAction SilentlyContinue
+    if ($verifyPwdInf) {
+        foreach ($key in $pwdSettings.Keys) {
+            $expected = "$($pwdSettings[$key])"
+            $match = $verifyPwdInf | Where-Object { $_ -match "^\s*$key\s*=" }
+            if ($match -and $match -match "=\s*(-?\d+)") { $val = $Matches[1] } else { $val = "MISSING" }
+            Test-Result "Password GptTmpl $key" $expected $val
+        }
+    } else {
+        Write-Fail "FAIL: Could not read back GptTmpl.inf for password verification"
+    }
+
+    $adPwd = Get-ADDefaultDomainPasswordPolicy -Identity $Domain
+    Test-Result "AD MinPasswordLength" "16" "$($adPwd.MinPasswordLength)"
+    Test-Result "AD PasswordHistoryCount" "24" "$($adPwd.PasswordHistoryCount)"
+    Test-Result "AD ComplexityEnabled" "False" "$($adPwd.ComplexityEnabled)"
+    Test-Result "AD LockoutThreshold" "10" "$($adPwd.LockoutThreshold)"
+
+    $summary += "Password Policy"
+}
+
+# ── Script Execution Policy ──────────────────────────────────────────────────
+
+if ($runScriptPolicy) {
+    Write-Banner "Script Execution Policy"
+
+    Set-GPRegistryValue -Name $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell" `
+        -ValueName "ExecutionPolicy" -Value "AllSigned" -Type String | Out-Null
+    Write-Setting "ExecutionPolicy = AllSigned"
+
+    try {
+        $readBack = (Get-GPRegistryValue -Name $GPOName `
+            -Key "HKLM\Software\Policies\Microsoft\Windows\PowerShell" `
+            -ValueName "ExecutionPolicy" -ErrorAction Stop).Value
+        Test-Result "ExecutionPolicy" "AllSigned" $readBack
+    } catch {
+        Write-Fail "FAIL: Could not read back ExecutionPolicy"
+    }
+
+    $summary += "Script Policy"
+}
+
+# ── Encryption Hardening ─────────────────────────────────────────────────────
+
+if ($runEncryption) {
+    Write-Banner "Encryption Hardening"
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Services\LanManServer\Parameters" `
+        -ValueName "RequireSecuritySignature" -Value 1
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
+        -ValueName "RequireSecuritySignature" -Value 1
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Services\LanManServer\Parameters" `
+        -ValueName "SMB1" -Value 0
+
+    if (-not $Safe) {
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters" `
+            -ValueName "SupportedEncryptionTypes" -Value 24
+
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+            -ValueName "LmCompatibilityLevel" -Value 5
+    } else {
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+            -ValueName "LmCompatibilityLevel" -Value 3
+        Write-Warn "Skipped Kerberos AES-only (Safe mode)"
+        Write-Warn "Using LmCompatibilityLevel 3 instead of 5 (Safe mode)"
+    }
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Services\NTDS\Parameters" `
+        -ValueName "LDAPServerIntegrity" -Value 2
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Services\ldap" `
+        -ValueName "LDAPClientIntegrity" -Value 2
+
+    if (-not $Safe) {
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\System\CurrentControlSet\Services\NTDS\Parameters" `
+            -ValueName "LdapEnforceChannelBinding" -Value 2
+    } else {
+        Write-Warn "Skipped LDAP channel binding enforcement (Safe mode)"
+    }
+
+    $summary += "Encryption"
+}
+
+# ── Credential Protection ────────────────────────────────────────────────────
+
+if ($runCredProtection) {
+    Write-Banner "Credential Protection"
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\SecurityProviders\WDigest" `
+        -ValueName "UseLogonCredential" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+        -ValueName "RestrictAnonymousSAM" -Value 1
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+        -ValueName "RestrictAnonymous" -Value 1
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+        -ValueName "EveryoneIncludesAnonymous" -Value 0
+
+    Set-GPRegistryValue -Name $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+        -ValueName "RestrictRemoteSAM" -Value "O:BAG:BAD:(A;;RC;;;BA)" -Type String | Out-Null
+    Write-Setting "HKLM\System\CurrentControlSet\Control\Lsa\RestrictRemoteSAM = O:BAG:BAD:(A;;RC;;;BA)"
+
+    $summary += "Credential Protection"
+}
+
+# ── Windows Defender (via GPO) ───────────────────────────────────────────────
+
+if ($runCredProtection) {
+    Write-Banner "Windows Defender (GPO)"
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender" `
+        -ValueName "DisableAntiSpyware" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender" `
+        -ValueName "DisableAntiVirus" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableRealtimeMonitoring" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableBehaviorMonitoring" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableOnAccessProtection" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableScanOnRealtimeEnable" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Real-Time Protection" `
+        -ValueName "DisableIOAVProtection" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\Spynet" `
+        -ValueName "SpynetReporting" -Value 2
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows Defender\MpEngine" `
+        -ValueName "MpEnablePus" -Value 1
+
+    $summary += "Windows Defender"
+}
+
+# ── Network Hardening ────────────────────────────────────────────────────────
+
+if ($runNetworkHardening) {
+    Write-Banner "Network Hardening"
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Policies\Microsoft\Windows NT\DNSClient" `
+        -ValueName "EnableMulticast" -Value 0
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Services\NetBT\Parameters" `
+        -ValueName "NodeType" -Value 2
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\Software\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp" `
+        -ValueName "DisableWpad" -Value 1
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+        -ValueName "UserAuthentication" -Value 1
+
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+        -ValueName "SecurityLayer" -Value 2
+
+    if (-not $Safe) {
+        foreach ($svc in @("TlntSvr", "SNMP")) {
+            Set-RegValue -GPOName $GPOName `
+                -Key "HKLM\System\CurrentControlSet\Services\$svc" `
+                -ValueName "Start" -Value 4
+        }
+    } else {
+        Write-Warn "Skipped disabling services (Safe mode)"
+    }
+
+    $summary += "Network Hardening"
+}
+
+# ── Force GP Update ──────────────────────────────────────────────────────────
+
+Write-Banner "Applying Group Policy"
+& gpupdate /force 2>&1 | ForEach-Object { Write-Host "    $_" }
+
+# ── Post-gpupdate Verification ──────────────────────────────────────────────
+
+Write-Banner "Post-gpupdate Verification"
+
+if ($runPasswordPolicy) {
+    $netAccounts = net accounts 2>&1
+    foreach ($line in $netAccounts) {
+        if ($line -match "Minimum password length\s+(\d+)") {
+            Test-Result "Effective MinPasswordLength" "16" $Matches[1]
+        }
+        if ($line -match "Lockout threshold\s+(\d+)") {
+            Test-Result "Effective LockoutThreshold" "10" $Matches[1]
+        }
+        if ($line -match "Lockout duration.*?(\d+)") {
+            Test-Result "Effective LockoutDuration" "15" $Matches[1]
+        }
+        if ($line -match "Length of password history\s+(\d+)") {
+            Test-Result "Effective PasswordHistory" "24" $Matches[1]
+        }
+    }
+}
+
+if ($runAuditPolicy) {
+    $auditOut = auditpol /get /category:* 2>&1
+    $auditCategories = @{
+        "Logon/Logoff"       = "Success and Failure"
+        "Account Logon"      = "Success and Failure"
+        "Account Management" = "Success and Failure"
+        "Object Access"      = "Success and Failure"
+        "DS Access"          = "Success and Failure"
+        "Policy Change"      = "No Auditing"
+        "Privilege Use"      = "No Auditing"
+        "System"             = "Success and Failure"
+        "Detailed Tracking"  = "Success and Failure"
+    }
+    foreach ($cat in $auditCategories.Keys) {
+        $match = $auditOut | Where-Object { $_ -match "^\s+$cat\s+" }
+        if ($match -and $match -match "(Success and Failure|Success|Failure|No Auditing)") {
+            Test-Result "Effective Audit '$cat'" $auditCategories[$cat] $Matches[1]
+        }
+    }
+}
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+
+Write-Banner "Complete"
+Write-Host ""
+if ($summary.Count -eq 0) {
+    Write-Host "  No sections were executed." -ForegroundColor Yellow
+} else {
+    Write-Host "  Sections applied:" -ForegroundColor Green
+    foreach ($s in $summary) { Write-Host "    - $s" -ForegroundColor Green }
+}
+
+# ── Verification Summary ────────────────────────────────────────────────────
+
+Write-Banner "Verification Summary"
+if ($script:failures.Count -eq 0) {
+    Write-Host "  All verifications passed." -ForegroundColor Green
+} else {
+    Write-Host "  $($script:failures.Count) verification(s) FAILED:" -ForegroundColor Red
+    foreach ($f in $script:failures) {
+        Write-Host "    - $f" -ForegroundColor Red
+    }
+}
+
+Write-Host ""
+Write-Host "  Manual checks:" -ForegroundColor White
+Write-Host "    gpmc.msc            - '$GPOName' GPO linked to domain" -ForegroundColor Gray
+Write-Host "    auditpol /get /category:* - audit categories on DC" -ForegroundColor Gray
+Write-Host "    gpresult /r         - on remote machines after gpupdate" -ForegroundColor Gray
+Write-Host "    net accounts        - password policy" -ForegroundColor Gray
+Write-Host ""
+
+if ($script:failures.Count -gt 0) { exit 1 }
 ```
 
 </details>
@@ -467,6 +1124,8 @@ Write-Host "[+] GPO import complete" -ForegroundColor Green
 > **You must run step 5 (Harden-GPO.ps1) before this.** That script enables Defender via GPO. This step pulls that policy, does local cleanup GPO can't do, and confirms everything works.
 
 ```powershell
+Set-StrictMode -Off
+
 # ── Phase 0: Preflight checks ────────────────────────────────────────────────
 Write-Host "=== Preflight ===" -ForegroundColor Cyan
 
@@ -535,8 +1194,16 @@ if ($locDis -eq 1) { Write-Host "  [!] Local DisableAntiSpyware = 1 (will fix)" 
 
 # Exclusions planted
 $mp = Get-MpPreference -ErrorAction SilentlyContinue
-$exTotal = (@($mp.ExclusionPath) + @($mp.ExclusionProcess) + @($mp.ExclusionExtension) + @($mp.ExclusionIpAddress) | Where-Object { $_ }).Count
+$exTotal = (@("ExclusionPath","ExclusionProcess","ExclusionExtension","ExclusionIpAddress") | ForEach-Object { $p = $mp.PSObject.Properties[$_]; if ($p) { $p.Value } } | Where-Object { $_ }).Count
 Write-Host "  Exclusions planted:      $exTotal" -ForegroundColor $(if($exTotal -eq 0){'Green'}else{'Red'})
+
+# Early exit if Defender is already fully operational
+$preCheck = Get-MpComputerStatus -ErrorAction SilentlyContinue
+if ($preCheck -and $preCheck.AMServiceEnabled -and $preCheck.RealTimeProtectionEnabled -and $preCheck.BehaviorMonitorEnabled -and $exTotal -eq 0) {
+    Write-Host ""
+    Write-Host "[OK] Defender is already fully operational — nothing to fix" -ForegroundColor Green
+    return
+}
 
 Write-Host ""
 
@@ -790,11 +1457,16 @@ if ($thirdPartyAV) {
             Write-Host "  [-] Service $svc does not exist on this machine — skipped" -ForegroundColor Gray
             continue
         }
-        $scOut = sc.exe config $svc start= auto 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [+] $svc set to auto-start" -ForegroundColor Green
+        $startType = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$svc" -Name Start -EA SilentlyContinue).Start
+        if ($startType -eq 2) {
+            Write-Host "  [+] $svc already set to auto-start" -ForegroundColor Green
         } else {
-            Write-Host "  [-] Failed to set $svc to auto-start: $scOut" -ForegroundColor Red
+            $scOut = sc.exe config $svc start= auto 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  [+] $svc set to auto-start" -ForegroundColor Green
+            } else {
+                Write-Host "  [-] Failed to set $svc to auto-start: $scOut" -ForegroundColor Red
+            }
         }
     }
 }
@@ -815,9 +1487,9 @@ $disableKeys = @(
 $flagsFound = 0; $flagsCleared = 0; $flagsFailed = 0
 foreach ($entry in $disableKeys) {
     $val = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
-    if ($null -ne $val -and $val.($entry.Name) -ne $null) {
+    if ($null -ne $val -and $val.($entry.Name) -eq 1) {
         $flagsFound++
-        Write-Host "  [!] Found $($entry.Name) = $($val.($entry.Name)) at $($entry.Path)" -ForegroundColor Yellow
+        Write-Host "  [!] Found $($entry.Name) = 1 at $($entry.Path)" -ForegroundColor Yellow
         try {
             Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction Stop
             # Verify removal
@@ -905,8 +1577,8 @@ if ($testsigningOn) {
 
 # ── Phase 2: Pull GPO and start services ─────────────────────────────────────
 gpupdate /force
-foreach ($svc in $services) { net start $svc 2>&1 | Out-Null }
-Start-Sleep -Seconds 3
+foreach ($svc in $services) { try { Start-Service -Name $svc -ErrorAction Stop } catch {} }
+Start-Sleep -Seconds 10
 
 # If service still won't start, try MpCmdRun -wdenable
 if ((Get-Service WinDefend -ErrorAction SilentlyContinue).Status -ne 'Running') {
@@ -995,13 +1667,12 @@ foreach ($rk in $exclusionRegKeys) {
         Write-Host "  [+] Cleared $parentShort\$keyShort" -ForegroundColor Green
     } else {
         $regFailed++
-        Write-Host "  [-] Failed to clear $rk : $delOut" -ForegroundColor Red
     }
 }
 if ($regCleared -eq 0 -and $regFailed -eq 0) {
     Write-Host "[+] No exclusion registry values found (already clean)" -ForegroundColor Green
 } elseif ($regFailed -gt 0) {
-    Write-Host "[-] Registry exclusions: $regCleared cleared, $regFailed failed (Tamper Protection or ACL issue)" -ForegroundColor Red
+    Write-Host "[i] Registry exclusions: $regCleared cleared, $regFailed skipped (will be cleaned via MpPreference)" -ForegroundColor Cyan
 } else {
     Write-Host "[+] Cleared exclusion values from $regCleared registry keys" -ForegroundColor Green
 }
@@ -1051,7 +1722,7 @@ if ($s) {
     Write-Host "  BehaviorMonitor:         $($s.BehaviorMonitorEnabled)"    -ForegroundColor $(if($s.BehaviorMonitorEnabled){'Green'}else{'Red'})
     Write-Host "  OnAccessProtection:      $($s.OnAccessProtectionEnabled)" -ForegroundColor $(if($s.OnAccessProtectionEnabled){'Green'}else{'Red'})
     Write-Host "  IoavProtection:          $($s.IoavProtectionEnabled)"     -ForegroundColor $(if($s.IoavProtectionEnabled){'Green'}else{'Red'})
-    Write-Host "  TamperProtection:        $($s.IsTamperProtected)"        -ForegroundColor $(if($s.IsTamperProtected){'Green'}else{'Red'})
+    Write-Host "  TamperProtection:        $($s.IsTamperProtected)$(if(-not $s.IsTamperProtected){' (requires Defender for Endpoint on Server)'})" -ForegroundColor $(if($s.IsTamperProtected){'Green'}else{'Cyan'})
     Write-Host "  AntivirusSignatureAge:   $($s.AntivirusSignatureAge) days" -ForegroundColor $(if($s.AntivirusSignatureAge -le 1){'Green'}else{'Yellow'})
 } else {
     Write-Host "  [!] Get-MpComputerStatus failed — Defender may not be installed" -ForegroundColor Red
@@ -1761,6 +2432,8 @@ Start-Service Sysmon64
 <summary>Enable Defender (Local, No GPO Needed)</summary>
 
 ```powershell
+Set-StrictMode -Off
+
 # ── Preflight checks ─────────────────────────────────────────────────────────
 Write-Host "=== Preflight ===" -ForegroundColor Cyan
 
@@ -1829,8 +2502,16 @@ if ($locDis -eq 1) { Write-Host "  [!] Local DisableAntiSpyware = 1 (will fix)" 
 
 # Exclusions planted
 $mp = Get-MpPreference -ErrorAction SilentlyContinue
-$exTotal = (@($mp.ExclusionPath) + @($mp.ExclusionProcess) + @($mp.ExclusionExtension) + @($mp.ExclusionIpAddress) | Where-Object { $_ }).Count
+$exTotal = (@("ExclusionPath","ExclusionProcess","ExclusionExtension","ExclusionIpAddress") | ForEach-Object { $p = $mp.PSObject.Properties[$_]; if ($p) { $p.Value } } | Where-Object { $_ }).Count
 Write-Host "  Exclusions planted:      $exTotal" -ForegroundColor $(if($exTotal -eq 0){'Green'}else{'Red'})
+
+# Early exit if Defender is already fully operational
+$preCheck = Get-MpComputerStatus -ErrorAction SilentlyContinue
+if ($preCheck -and $preCheck.AMServiceEnabled -and $preCheck.RealTimeProtectionEnabled -and $preCheck.BehaviorMonitorEnabled -and $exTotal -eq 0) {
+    Write-Host ""
+    Write-Host "[OK] Defender is already fully operational — nothing to fix" -ForegroundColor Green
+    return
+}
 
 Write-Host ""
 
@@ -1941,11 +2622,16 @@ if ($thirdPartyAV) {
             Write-Host "  [-] Service $svc does not exist on this machine — skipped" -ForegroundColor Gray
             continue
         }
-        $scOut = sc.exe config $svc start= auto 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [+] $svc set to auto-start" -ForegroundColor Green
+        $startType = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$svc" -Name Start -EA SilentlyContinue).Start
+        if ($startType -eq 2) {
+            Write-Host "  [+] $svc already set to auto-start" -ForegroundColor Green
         } else {
-            Write-Host "  [-] Failed to set $svc to auto-start: $scOut" -ForegroundColor Red
+            $scOut = sc.exe config $svc start= auto 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  [+] $svc set to auto-start" -ForegroundColor Green
+            } else {
+                Write-Host "  [-] Failed to set $svc to auto-start: $scOut" -ForegroundColor Red
+            }
         }
     }
 }
@@ -1982,9 +2668,9 @@ $disableKeys = @(
 $flagsFound = 0; $flagsCleared = 0; $flagsFailed = 0
 foreach ($entry in $disableKeys) {
     $val = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
-    if ($null -ne $val -and $val.($entry.Name) -ne $null) {
+    if ($null -ne $val -and $val.($entry.Name) -eq 1) {
         $flagsFound++
-        Write-Host "  [!] Found $($entry.Name) = $($val.($entry.Name)) at $($entry.Path)" -ForegroundColor Yellow
+        Write-Host "  [!] Found $($entry.Name) = 1 at $($entry.Path)" -ForegroundColor Yellow
         try {
             Remove-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction Stop
             $check = Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue
@@ -2029,8 +2715,8 @@ foreach ($k in $polKeys) {
 }
 
 # ── Start services ───────────────────────────────────────────────────────────
-foreach ($svc in $services) { net start $svc 2>&1 | Out-Null }
-Start-Sleep -Seconds 3
+foreach ($svc in $services) { try { Start-Service -Name $svc -ErrorAction Stop } catch {} }
+Start-Sleep -Seconds 10
 
 # If service still won't start, try MpCmdRun -wdenable
 if ((Get-Service WinDefend -ErrorAction SilentlyContinue).Status -ne 'Running') {
@@ -2110,13 +2796,12 @@ foreach ($rk in $exclusionRegKeys) {
         Write-Host "  [+] Cleared $parentShort\$keyShort" -ForegroundColor Green
     } else {
         $regFailed++
-        Write-Host "  [-] Failed to clear $rk : $delOut" -ForegroundColor Red
     }
 }
 if ($regCleared -eq 0 -and $regFailed -eq 0) {
     Write-Host "[+] No exclusion registry values found (already clean)" -ForegroundColor Green
 } elseif ($regFailed -gt 0) {
-    Write-Host "[-] Registry exclusions: $regCleared cleared, $regFailed failed (Tamper Protection or ACL issue)" -ForegroundColor Red
+    Write-Host "[i] Registry exclusions: $regCleared cleared, $regFailed skipped (will be cleaned via MpPreference)" -ForegroundColor Cyan
 } else {
     Write-Host "[+] Cleared exclusion values from $regCleared registry keys" -ForegroundColor Green
 }
@@ -2166,7 +2851,7 @@ if ($s) {
     Write-Host "  BehaviorMonitor:         $($s.BehaviorMonitorEnabled)"    -ForegroundColor $(if($s.BehaviorMonitorEnabled){'Green'}else{'Red'})
     Write-Host "  OnAccessProtection:      $($s.OnAccessProtectionEnabled)" -ForegroundColor $(if($s.OnAccessProtectionEnabled){'Green'}else{'Red'})
     Write-Host "  IoavProtection:          $($s.IoavProtectionEnabled)"     -ForegroundColor $(if($s.IoavProtectionEnabled){'Green'}else{'Red'})
-    Write-Host "  TamperProtection:        $($s.IsTamperProtected)"        -ForegroundColor $(if($s.IsTamperProtected){'Green'}else{'Red'})
+    Write-Host "  TamperProtection:        $($s.IsTamperProtected)$(if(-not $s.IsTamperProtected){' (requires Defender for Endpoint on Server)'})" -ForegroundColor $(if($s.IsTamperProtected){'Green'}else{'Cyan'})
     Write-Host "  AntivirusSignatureAge:   $($s.AntivirusSignatureAge) days" -ForegroundColor $(if($s.AntivirusSignatureAge -le 1){'Green'}else{'Yellow'})
 } else {
     Write-Host "  [!] Get-MpComputerStatus failed — Defender may not be installed" -ForegroundColor Red
@@ -2376,14 +3061,6 @@ foreach ($groupName in @($desiredState.Keys)) {
 Write-Host "`nRestore complete." -ForegroundColor Cyan
 ```
 
-#### Disable/Enable AD Accounts
-```powershell
-# Disable
-"Guest","Administrator" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
-# Enable
-"Guest","Administrator" | ForEach-Object { Enable-ADAccount -Identity $_; Write-Host "  Enabled: $_" -ForegroundColor Green }
-```
-
 #### Disable WinRM (kill sessions, stop, block firewall, prevent startup)
 ```powershell
 Get-WSManInstance -ResourceURI shell -Enumerate -ErrorAction SilentlyContinue | ForEach-Object { Remove-WSManInstance -ResourceURI shell -SelectorSet @{ShellId=$_.ShellId} }
@@ -2485,6 +3162,68 @@ Then open Remote Desktop and connect to `localhost:23456`.
 </details>
 
 <details>
+<summary>Restore GPO from backup zip (local path)</summary>
+
+Restore GPOs from a backup zip (e.g. the `GPO-Export-*.zip` created by step 5, or `GPOBackups.zip`).
+
+```powershell
+# ── Point this to the backup zip or extracted folder ────────────────────
+$backupLocation = "C:\GPO-Export.zip"   # <-- CHANGE: .zip file or folder containing {GUID} dirs
+
+Import-Module GroupPolicy, ActiveDirectory
+if ($backupLocation -match '\.zip$' -and (Test-Path $backupLocation)) {
+    $extractPath = "$env:TEMP\GPORestore"
+    Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $backupLocation -DestinationPath $extractPath -Force
+} elseif (Test-Path "$backupLocation\{*}") {
+    $extractPath = $backupLocation
+} else {
+    Write-Host "[X] '$backupLocation' not found or contains no GPO backups" -ForegroundColor Red
+    return
+}
+
+$DomainDN = (Get-ADDomain).DistinguishedName
+$targetDomain = (Get-ADDomain).DNSRoot
+
+# Verify backup is from this domain
+$firstBackup = Get-ChildItem "$extractPath\{*}\Backup.xml" | Select-Object -First 1
+$sourceDomain = ([xml](Get-Content $firstBackup.FullName)).GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.Domain.InnerText
+if ($sourceDomain -ne $targetDomain) {
+    Write-Host "[X] Backup is from '$sourceDomain' but this domain is '$targetDomain'" -ForegroundColor Red
+    Write-Host "    Cross-domain GPO restore is not supported. Use step 5 (Harden-GPO) instead." -ForegroundColor Red
+    return
+}
+
+# Reset GPOs to defaults before restoring
+Get-GPO -All | Where-Object { $_.DisplayName -notin "Default Domain Policy","Default Domain Controllers Policy" } | ForEach-Object {
+    Write-Host "  Removing GPO: $($_.DisplayName)" -ForegroundColor Yellow
+    Remove-GPO -Guid $_.Id -ErrorAction SilentlyContinue
+}
+"Y","Y" | dcgpofix /target:both 2>&1 | ForEach-Object { Write-Host "    $_" }
+gpupdate /force
+
+# Import all GPO backups
+Get-ChildItem -Path $extractPath -Directory -Filter "{*}" | ForEach-Object {
+    $xml = [xml](Get-Content "$($_.FullName)\Backup.xml")
+    $name = $xml.GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.DisplayName.InnerText
+    $id   = $_.Name -replace '[{}]'
+    New-GPO -Name $name -ErrorAction SilentlyContinue | Out-Null
+    try {
+        Import-GPO -BackupId $id -Path $extractPath -TargetName $name -ErrorAction Stop
+        New-GPLink -Name $name -Target $DomainDN -LinkEnabled Yes -ErrorAction SilentlyContinue
+        Write-Host "  [+] Imported & linked: $name" -ForegroundColor Green
+    } catch {
+        Write-Host "  [X] Failed to import '$name': $_" -ForegroundColor Red
+    }
+}
+
+gpupdate /force
+Write-Host "[+] GPO restore complete" -ForegroundColor Green
+```
+
+</details>
+
+<details>
 <summary>GPO Import from GitHub (download GPOBackups.zip from private repo)</summary>
 
 Use this if you don't have the GPOBackups.zip on a USB and need to pull it from the repo.
@@ -2508,12 +3247,38 @@ Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 # ── Import GPOs ─────────────────────────────────────────────────────────
 Import-Module GroupPolicy, ActiveDirectory
 $DomainDN = (Get-ADDomain).DistinguishedName
+$targetDomain = (Get-ADDomain).DNSRoot
 
-New-GPO -Name "Hardening" -ErrorAction SilentlyContinue
-Import-GPO -BackupGpoName "Hardening" -Path $extractPath -TargetName "Hardening"
-New-GPLink -Name "Hardening" -Target $DomainDN -LinkEnabled Yes -ErrorAction SilentlyContinue
+# Verify backup is from this domain
+$sourceDomain = ([xml](Get-Content (Get-ChildItem "$extractPath\{*}\Backup.xml" | Select-Object -First 1).FullName)).GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.Domain.InnerText
+if ($sourceDomain -ne $targetDomain) {
+    Write-Host "[X] Backup is from '$sourceDomain' but this domain is '$targetDomain'" -ForegroundColor Red
+    Write-Host "    Cross-domain GPO restore is not supported. Use step 5 (Harden-GPO) instead." -ForegroundColor Red
+    return
+}
 
-Import-GPO -BackupGpoName "Default Domain Policy" -Path $extractPath -TargetName "Default Domain Policy"
+# Reset GPOs to defaults before restoring
+Get-GPO -All | Where-Object { $_.DisplayName -notin "Default Domain Policy","Default Domain Controllers Policy" } | ForEach-Object {
+    Write-Host "  Removing GPO: $($_.DisplayName)" -ForegroundColor Yellow
+    Remove-GPO -Guid $_.Id -ErrorAction SilentlyContinue
+}
+"Y","Y" | dcgpofix /target:both 2>&1 | ForEach-Object { Write-Host "    $_" }
+gpupdate /force
+
+# Import all GPO backups
+Get-ChildItem -Path $extractPath -Directory -Filter "{*}" | ForEach-Object {
+    $xml = [xml](Get-Content "$($_.FullName)\Backup.xml")
+    $name = $xml.GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.DisplayName.InnerText
+    $id   = $_.Name -replace '[{}]'
+    New-GPO -Name $name -ErrorAction SilentlyContinue | Out-Null
+    try {
+        Import-GPO -BackupId $id -Path $extractPath -TargetName $name -ErrorAction Stop
+        New-GPLink -Name $name -Target $DomainDN -LinkEnabled Yes -ErrorAction SilentlyContinue
+        Write-Host "  [+] Imported & linked: $name" -ForegroundColor Green
+    } catch {
+        Write-Host "  [X] Failed to import '$name': $_" -ForegroundColor Red
+    }
+}
 
 # Local registry fix (GPO import doesn't do this)
 Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" `
