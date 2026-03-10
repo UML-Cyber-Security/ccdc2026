@@ -1,11 +1,11 @@
 # Auditd Usage: sudo ./auditd.sh
 - name: Install auditd
   ansible.builtin.script:
-    cmd: /Users/michaelleahy/CCDC/SOC/Initial/auditd.sh
+    cmd: /location/of/auditd_script
   become: true
 
 # Sysmon Usage: sudo ./sysmon.sh
 - name: Install sysmon
   ansible.builtin.script:
-    cmd: /Users/michaelleahy/CCDC/SOC/Initial/sysmon-install.sh
+    cmd: /location/of/sysmon_script
   become: true
