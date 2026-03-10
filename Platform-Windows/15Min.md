@@ -25,6 +25,7 @@ Set-Content -Path $HostsFilePath -Value $defaultHostsContent -Force
 
 #### Install Firefox
 ```powershell
+$ProgressPreference = 'SilentlyContinue'
 $firefoxInstallerUrl = "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=en-US"
 $installerPath = "$env:TEMP\firefox_installer.exe"
 Invoke-WebRequest -Uri $firefoxInstallerUrl -OutFile $installerPath
@@ -70,14 +71,122 @@ Get-ChildItem "$dest\*.exe" | ForEach-Object {
         -Name $_.FullName -Value "~ RUNASADMIN" -ErrorAction SilentlyContinue
 }
 
-# Install Sysmon with config (XML built via string to keep markdown rendering clean)
-$exts = '.exe','.dll','.sys','.scr','.ps1','.bat','.cmd','.vbs','.js','.wsf','.hta','.msi'
-$lines = @('<Sysmon schemaversion="4.50">','  <EventFiltering>',
-    '    <ProcessCreate onmatch="exclude" />','    <NetworkConnect onmatch="exclude" />',
-    '    <FileCreate onmatch="include">')
-$exts | ForEach-Object { $lines += "      <TargetFilename condition=`"end with`">$_</TargetFilename>" }
-$lines += '    </FileCreate>','  </EventFiltering>','</Sysmon>'
-($lines -join "`r`n") | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
+# Install Sysmon with hardened config
+@'
+<Sysmon schemaversion="4.50">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+    <ProcessCreate onmatch="exclude">
+      <Image condition="is">C:\Windows\System32\backgroundTaskHost.exe</Image>
+      <Image condition="is">C:\Windows\System32\RuntimeBroker.exe</Image>
+      <Image condition="is">C:\Windows\System32\sihost.exe</Image>
+      <Image condition="is">C:\Windows\System32\SearchProtocolHost.exe</Image>
+      <Image condition="is">C:\Windows\System32\SearchFilterHost.exe</Image>
+      <Image condition="is">C:\Windows\System32\audiodg.exe</Image>
+      <Image condition="is">C:\Windows\System32\ctfmon.exe</Image>
+      <Image condition="is">C:\Windows\System32\MusNotifyIcon.exe</Image>
+      <Image condition="is">C:\Windows\System32\musnotification.exe</Image>
+    </ProcessCreate>
+    <FileCreateTime onmatch="exclude" />
+    <NetworkConnect onmatch="exclude">
+      <DestinationPort condition="is">67</DestinationPort>
+      <DestinationPort condition="is">68</DestinationPort>
+    </NetworkConnect>
+    <ImageLoad onmatch="include">
+      <ImageLoaded condition="contains">\Temp\</ImageLoaded>
+      <ImageLoaded condition="contains">\AppData\</ImageLoaded>
+      <ImageLoaded condition="contains">\Downloads\</ImageLoaded>
+      <ImageLoaded condition="contains">\ProgramData\</ImageLoaded>
+      <ImageLoaded condition="contains">\Users\Public\</ImageLoaded>
+      <ImageLoaded condition="contains">\Windows\Tasks\</ImageLoaded>
+      <ImageLoaded condition="contains">\Recycle</ImageLoaded>
+      <Signed condition="is">false</Signed>
+    </ImageLoad>
+    <CreateRemoteThread onmatch="exclude">
+      <SourceImage condition="is">C:\Windows\System32\csrss.exe</SourceImage>
+      <SourceImage condition="is">C:\Windows\System32\wininit.exe</SourceImage>
+      <SourceImage condition="is">C:\Windows\System32\winlogon.exe</SourceImage>
+    </CreateRemoteThread>
+    <ProcessAccess onmatch="include">
+      <TargetImage condition="is">C:\Windows\System32\lsass.exe</TargetImage>
+    </ProcessAccess>
+    <FileCreate onmatch="include">
+      <TargetFilename condition="end with">.exe</TargetFilename>
+      <TargetFilename condition="end with">.dll</TargetFilename>
+      <TargetFilename condition="end with">.sys</TargetFilename>
+      <TargetFilename condition="end with">.scr</TargetFilename>
+      <TargetFilename condition="end with">.ps1</TargetFilename>
+      <TargetFilename condition="end with">.bat</TargetFilename>
+      <TargetFilename condition="end with">.cmd</TargetFilename>
+      <TargetFilename condition="end with">.vbs</TargetFilename>
+      <TargetFilename condition="end with">.js</TargetFilename>
+      <TargetFilename condition="end with">.wsf</TargetFilename>
+      <TargetFilename condition="end with">.hta</TargetFilename>
+      <TargetFilename condition="end with">.msi</TargetFilename>
+      <TargetFilename condition="end with">.aspx</TargetFilename>
+      <TargetFilename condition="end with">.asp</TargetFilename>
+      <TargetFilename condition="end with">.jsp</TargetFilename>
+      <TargetFilename condition="end with">.php</TargetFilename>
+      <TargetFilename condition="contains">\inetpub\</TargetFilename>
+      <TargetFilename condition="contains">\wwwroot\</TargetFilename>
+      <TargetFilename condition="contains">\Start Menu\Programs\Startup\</TargetFilename>
+    </FileCreate>
+    <RegistryEvent onmatch="include">
+      <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+      <TargetObject condition="contains">\CurrentVersion\RunOnce</TargetObject>
+      <TargetObject condition="contains">\Services\</TargetObject>
+      <TargetObject condition="contains">\Schedule\TaskCache\</TargetObject>
+      <TargetObject condition="contains">\AppInit_DLLs</TargetObject>
+      <TargetObject condition="contains">\Image File Execution Options\</TargetObject>
+      <TargetObject condition="contains">\Winlogon\</TargetObject>
+      <TargetObject condition="contains">\SecurityProviders\</TargetObject>
+      <TargetObject condition="contains">\InprocServer32\</TargetObject>
+      <TargetObject condition="contains">\Explorer\Shell Folders</TargetObject>
+      <TargetObject condition="contains">\Wow6432Node\</TargetObject>
+      <TargetObject condition="contains">\Environment\</TargetObject>
+      <TargetObject condition="contains">\Windows\CurrentVersion\Policies\</TargetObject>
+      <TargetObject condition="contains">\Authentication\Credential Providers\</TargetObject>
+      <TargetObject condition="contains">\LSA\</TargetObject>
+    </RegistryEvent>
+    <FileCreateStreamHash onmatch="exclude">
+      <TargetFilename condition="end with">Zone.Identifier</TargetFilename>
+    </FileCreateStreamHash>
+    <PipeEvent onmatch="include">
+      <PipeName condition="contains">msagent_</PipeName>
+      <PipeName condition="contains">MSSE-</PipeName>
+      <PipeName condition="contains">postex_</PipeName>
+      <PipeName condition="contains">status_</PipeName>
+      <PipeName condition="is">\psexecsvc</PipeName>
+      <PipeName condition="is">\paexecsvc</PipeName>
+      <PipeName condition="is">\remcom_comunicacion</PipeName>
+      <PipeName condition="is">\isapi_http</PipeName>
+      <PipeName condition="is">\isapi_dg</PipeName>
+      <PipeName condition="is">\isapi_dg2</PipeName>
+      <PipeName condition="contains">csexec</PipeName>
+      <PipeName condition="contains">DserNamePipe</PipeName>
+      <PipeName condition="contains">SearchTextHarvester</PipeName>
+      <PipeName condition="contains">lsadump</PipeName>
+      <PipeName condition="contains">cachedump</PipeName>
+      <PipeName condition="contains">wceservice</PipeName>
+    </PipeEvent>
+    <DnsQuery onmatch="exclude">
+      <QueryName condition="end with">.windowsupdate.com</QueryName>
+      <QueryName condition="end with">.msftconnecttest.com</QueryName>
+      <QueryName condition="end with">.msftncsi.com</QueryName>
+    </DnsQuery>
+    <FileDelete onmatch="include">
+      <TargetFilename condition="end with">.exe</TargetFilename>
+      <TargetFilename condition="end with">.dll</TargetFilename>
+      <TargetFilename condition="end with">.ps1</TargetFilename>
+      <TargetFilename condition="end with">.bat</TargetFilename>
+      <TargetFilename condition="end with">.cmd</TargetFilename>
+      <TargetFilename condition="end with">.vbs</TargetFilename>
+      <TargetFilename condition="contains">\winevt\Logs\</TargetFilename>
+    </FileDelete>
+    <ProcessTampering onmatch="exclude" />
+  </EventFiltering>
+</Sysmon>
+'@ | Out-File "$env:TEMP\sc.xml" -Encoding UTF8
 Write-Host "[*] Installing Sysmon..." -ForegroundColor Cyan
 cmd /c "`"$dest\Sysmon64.exe`" -accepteula -i `"$env:TEMP\sc.xml`" >nul 2>&1"
 
@@ -377,6 +486,7 @@ Write-Host "[+] SSH killed, disabled, and blocked" -ForegroundColor Green
 
 #### Install Nmap
 ```powershell
+$ProgressPreference = 'SilentlyContinue'
 $nmapUrl = "https://nmap.org/dist/nmap-7.98-setup.exe"
 $installerPath = "$env:USERPROFILE\Downloads\nmap-setup.exe"
 Invoke-WebRequest -Uri $nmapUrl -OutFile $installerPath
@@ -386,6 +496,7 @@ Remove-Item -Path $installerPath -Force
 
 #### Install Wireshark
 ```powershell
+$ProgressPreference = 'SilentlyContinue'
 $installerUrl = "https://2.na.dl.wireshark.org/win64/Wireshark-4.6.4-x64.exe"
 $installerPath = "wireshark.exe"
 Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
@@ -917,6 +1028,13 @@ if ($runEncryption) {
     } else {
         Write-Warn "Skipped LDAP channel binding enforcement (Safe mode)"
     }
+
+    # ELAM: Block known bad drivers (default is 0x03 which allows known bad critical drivers)
+    # 0x00 = known good only (can BSOD if a legit driver is unclassified)
+    # 0x01 = known good + unknown (safe default — blocks known bad)
+    Set-RegValue -GPOName $GPOName `
+        -Key "HKLM\System\CurrentControlSet\Control\EarlyLaunch" `
+        -ValueName "DriverLoadPolicy" -Value 1
 
     $summary += "Encryption"
 }
@@ -1787,6 +1905,7 @@ $zipPath = "$env:USERPROFILE\Downloads\chainsaw_package.zip"
 $tempExtractPath = "$env:USERPROFILE\Downloads\chainsaw_temp"
 $destinationPath = "C:\Chainsaw"
 
+$ProgressPreference = 'SilentlyContinue'
 Write-Host "Downloading Chainsaw..."
 Invoke-WebRequest -Uri $url -OutFile $zipPath
 
@@ -2156,6 +2275,53 @@ if (Get-Command choco -ErrorAction SilentlyContinue) {
     Write-Host "  Chocolatey not installed" -ForegroundColor Green
 }
 
+Write-Host "`n========== SMB SHARES AUDIT ==========" -ForegroundColor Cyan
+$shares = Get-SmbShare -ErrorAction SilentlyContinue
+if ($shares) {
+    # Dangerous paths that should never be shared
+    $dangerousPaths = @(
+        "C:\Windows", "C:\Windows\System32", "C:\Windows\SysWOW64",
+        "C:\Program Files", "C:\Program Files (x86)", "C:\Users",
+        "C:\ProgramData", "C:\", "D:\", "E:\"
+    )
+    # Required AD shares on Domain Controllers — don't flag these
+    $adShares = @("NETLOGON", "SYSVOL")
+    $isDC = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole -ge 4
+
+    foreach ($s in $shares) {
+        $path = $s.Path
+        $name = $s.Name
+        # Flag admin shares (C$, ADMIN$, IPC$) — expected but worth noting
+        if ($name -match '^\w\$$|^ADMIN\$$|^IPC\$$') {
+            Write-Host "  [ADMIN] $name -> $path" -ForegroundColor DarkGray
+            continue
+        }
+        # NETLOGON and SYSVOL are required on DCs — just note them
+        if ($isDC -and $name -in $adShares) {
+            Write-Host "  [AD-OK] $name -> $path  (required DC share)" -ForegroundColor DarkGray
+            continue
+        }
+        # Flag shares pointing to dangerous paths
+        $isDangerous = $false
+        foreach ($dp in $dangerousPaths) {
+            if ($path -and ($path -eq $dp -or $path.StartsWith("$dp\"))) {
+                Write-Host "  [DANGER] $name -> $path  (sharing system/sensitive directory!)" -ForegroundColor Red
+                $isDangerous = $true
+                break
+            }
+        }
+        if (-not $isDangerous) {
+            # Show permissions for non-admin, non-dangerous shares
+            $access = Get-SmbShareAccess -Name $name -ErrorAction SilentlyContinue
+            $perms = ($access | ForEach-Object { "$($_.AccountName):$($_.AccessRight)" }) -join ", "
+            $color = if ($access | Where-Object { $_.AccountName -match "Everyone" }) { "Yellow" } else { "Cyan" }
+            Write-Host "  [SHARE] $name -> $path  ($perms)" -ForegroundColor $color
+        }
+    }
+} else {
+    Write-Host "  No SMB shares found (or SMB not available)" -ForegroundColor Green
+}
+
 Write-Host "`n========== LISTENING PORTS (non-standard) ==========" -ForegroundColor Cyan
 Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
     Where-Object { $_.LocalPort -notin @(135,139,389,445,636,3389,5985,88,53,464,9389) } |
@@ -2240,7 +2406,100 @@ if ($wsl) {
     }
 }
 
+# Write-Host "`n========== REMOVE DANGEROUS SMB SHARES ==========" -ForegroundColor Cyan
+# $isDC = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole -ge 4
+# $skipNames = '^\w\$$|^ADMIN\$$|^IPC\$$'
+# $shares = @(Get-SmbShare -ErrorAction SilentlyContinue |
+#     Where-Object { $_.Name -notmatch $skipNames } |
+#     Where-Object { -not ($isDC -and $_.Name -in @("NETLOGON","SYSVOL")) })
+# if ($shares.Count -eq 0) {
+#     Write-Host "  No non-default shares to remove" -ForegroundColor Green
+# } else {
+#     Write-Host "  Found $($shares.Count) share(s) to remove:" -ForegroundColor Yellow
+#     foreach ($s in $shares) {
+#         $access = Get-SmbShareAccess -Name $s.Name -ErrorAction SilentlyContinue
+#         $perms = ($access | ForEach-Object { "$($_.AccountName):$($_.AccessRight)" }) -join ", "
+#         Write-Host "    $($s.Name) -> $($s.Path)  ($perms)" -ForegroundColor Yellow
+#     }
+#     $confirm = Read-Host "`n  Remove all listed shares? (Y/N)"
+#     if ($confirm -eq "Y") {
+#         foreach ($s in $shares) {
+#             try {
+#                 Remove-SmbShare -Name $s.Name -Force -ErrorAction Stop
+#                 Write-Host "  [REMOVED] $($s.Name)" -ForegroundColor Green
+#             } catch {
+#                 Write-Host "  [FAILED] $($s.Name) — $($_.Exception.Message)" -ForegroundColor Red
+#             }
+#         }
+#     } else {
+#         Write-Host "  Skipped share removal" -ForegroundColor DarkGray
+#     }
+# }
+
+# # Disable admin shares (C$, ADMIN$) from auto-creating on reboot
+# Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters" `
+#     -Name "AutoShareServer" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+# Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters" `
+#     -Name "AutoShareWks" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+# Write-Host "  [SET] Admin shares (C$, ADMIN$) won't recreate on reboot" -ForegroundColor Green
+
+# # Restrict anonymous access to shares
+# Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+#     -Name "RestrictAnonymous" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+# Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters" `
+#     -Name "RestrictNullSessAccess" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+# Write-Host "  [SET] Anonymous/null session access restricted" -ForegroundColor Green
+
 Write-Host "`n[+] Done. Review output above for failures." -ForegroundColor Cyan
+```
+
+</details>
+
+<details>
+<summary>Secure File Transfer Between Machines</summary>
+
+Use these to move files/scripts between your Windows and Linux machines during competition. All methods are encrypted and require no additional installs.
+
+#### SCP (Windows 10+ built-in, encrypted via SSH)
+```powershell
+# Copy file FROM Linux to Windows
+scp user@192.168.1.50:/home/user/file.txt C:\Users\You\Desktop\
+
+# Copy folder FROM Linux to Windows
+scp -r user@192.168.1.50:/home/user/folder C:\Users\You\Desktop\
+
+# Copy file FROM Windows to Linux
+scp C:\Users\You\Desktop\file.txt user@192.168.1.50:/home/user/
+
+# Copy between two Windows machines (requires SSH enabled on target)
+scp C:\path\to\file.txt user@192.168.1.100:C:\Users\You\Desktop\
+```
+
+#### WinRM (Windows to Windows, encrypted, no extra install)
+```powershell
+# Copy file to remote Windows machine (WinRM must be enabled on target)
+$session = New-PSSession -ComputerName 192.168.1.100 -Credential (Get-Credential)
+Copy-Item -Path "C:\local\file.txt" -Destination "C:\remote\path\" -ToSession $session
+
+# Copy folder recursively
+Copy-Item -Path "C:\local\folder" -Destination "C:\remote\path\" -ToSession $session -Recurse
+
+# Copy FROM remote machine to local
+Copy-Item -Path "C:\remote\file.txt" -Destination "C:\local\path\" -FromSession $session
+
+Remove-PSSession $session
+```
+
+#### Quick SMB share (temporary, authenticated, remove when done)
+```powershell
+# On the SOURCE machine — create a temp share with a specific user
+net share TempShare=C:\path\to\share /grant:Administrator,READ
+
+# On the DESTINATION machine — copy from the share
+robocopy \\192.168.1.100\TempShare C:\destination /E /Z /R:3
+
+# On the SOURCE machine — remove the share immediately after
+net share TempShare /delete
 ```
 
 </details>
@@ -3095,6 +3354,7 @@ C:\Sysinternals\Sysmon64.exe -u
 
 #### Legacy Full Sysinternals Install (all tools, no filtering)
 ```powershell
+$ProgressPreference = 'SilentlyContinue'
 Invoke-WebRequest "https://download.sysinternals.com/files/SysinternalsSuite.zip" -OutFile "$env:TEMP\ss.zip"
 Expand-Archive "$env:TEMP\ss.zip" -DestinationPath "C:\Sysinternals" -Force
 Remove-Item "$env:TEMP\ss.zip"
@@ -3112,6 +3372,10 @@ Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart
 
 # Disable unnecessary services
 gsv RemoteRegistry,TlntSvr,SNMP -ea 0 | spsv -f -pas | Set-Service -st Disabled
+
+# ELAM: Block known bad drivers (default 0x03 allows them if critical)
+# 1 = known good + unknown (safe), 0 = known good only (strict, can BSOD)
+reg add "HKLM\System\CurrentControlSet\Control\EarlyLaunch" /v DriverLoadPolicy /t REG_DWORD /d 1 /f
 ```
 - **Disable LLMNR:** `gpedit.msc -> Computer Config -> Admin Templates -> Network -> DNS Client -> Turn off multicast name resolution -> Enable`
 - **Disable NBT-NS:** `Network adapter -> IPv4 Properties -> Advanced -> WINS -> Disable NetBIOS over TCP/IP`
@@ -3240,6 +3504,7 @@ $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github.v
 $zipPath = "$env:TEMP\GPOBackups.zip"
 $extractPath = "$env:TEMP\GPOBackups"
 
+$ProgressPreference = 'SilentlyContinue'
 Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/contents/$file?ref=$branch" `
     -Headers $headers -OutFile $zipPath
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
