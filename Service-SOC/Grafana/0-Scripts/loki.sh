@@ -2,6 +2,7 @@
 
 # WHAT THIS SCRIPT DOES:
 # Installs Grafana Loki v2.9.3 as a systemd service for log aggregation on port 3100.
+# Last Updated: February 21, 2026
 
 # Download and install Loki
 cd /tmp
@@ -47,6 +48,7 @@ schema_config:
 limits_config:
   reject_old_samples: true
   reject_old_samples_max_age: 168h
+  volume_enabled: true
 EOF
 
 
@@ -67,4 +69,3 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now loki
 sudo systemctl status loki
-
