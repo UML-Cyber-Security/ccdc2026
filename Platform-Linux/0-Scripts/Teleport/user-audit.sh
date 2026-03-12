@@ -53,6 +53,14 @@ echo "[!] Actions execute immediately."
 echo ""
 
 #######################################
+# Tracking arrays
+#######################################
+KEPT_USERS=()
+DELETED_USERS=()
+ROLES_REMOVED_USERS=()
+LOCKED_USERS=()
+
+#######################################
 # Loop through users
 #######################################
 for USER in $USERS; do
@@ -63,13 +71,15 @@ for USER in $USERS; do
     echo "Action:"
     echo "1) Keep"
     echo "2) Delete user"
-    echo "3) Remove all roles"
-    read -rp "Choice (1/2/3): " ACTION
+    echo "3) Deprivilege (remove all roles)"
+    echo "4) Lock"
+    read -rp "Choice (1/2/3/4): " ACTION
 
     case "$ACTION" in
         2)
             echo "[*] Deleting $USER"
             run_tctl rm user/"$USER" || echo "[!] Failed to delete $USER"
+            DELETED_USERS+=("$USER")
             ;;
         3)
             echo "[*] Removing all roles from $USER"
@@ -106,9 +116,16 @@ for USER in $USERS; do
             fi
 
             rm -f "$TMPFILE"
+            ROLES_REMOVED_USERS+=("$USER")
+            ;;
+        4)
+            echo "[*] Locking $USER"
+            run_tctl lock --user="$USER" || echo "[!] Failed to lock $USER"
+            LOCKED_USERS+=("$USER")
             ;;
         *)
             echo "[*] Keeping $USER"
+            KEPT_USERS+=("$USER")
             ;;
     esac
 
@@ -116,3 +133,46 @@ for USER in $USERS; do
 done
 
 echo "[*] User review complete."
+
+#######################################
+# Summary
+#######################################
+echo ""
+echo "======================================"
+echo "           AUDIT SUMMARY"
+echo "======================================"
+
+echo ""
+echo "Users Kept (${#KEPT_USERS[@]}):"
+if [[ ${#KEPT_USERS[@]} -eq 0 ]]; then
+    echo "  None"
+else
+    for U in "${KEPT_USERS[@]}"; do echo "  - $U"; done
+fi
+
+echo ""
+echo "Users Deleted (${#DELETED_USERS[@]}):"
+if [[ ${#DELETED_USERS[@]} -eq 0 ]]; then
+    echo "  None"
+else
+    for U in "${DELETED_USERS[@]}"; do echo "  - $U"; done
+fi
+
+echo ""
+echo "Users With Roles Removed (${#ROLES_REMOVED_USERS[@]}):"
+if [[ ${#ROLES_REMOVED_USERS[@]} -eq 0 ]]; then
+    echo "  None"
+else
+    for U in "${ROLES_REMOVED_USERS[@]}"; do echo "  - $U"; done
+fi
+
+echo ""
+echo "Users Locked (${#LOCKED_USERS[@]}):"
+if [[ ${#LOCKED_USERS[@]} -eq 0 ]]; then
+    echo "  None"
+else
+    for U in "${LOCKED_USERS[@]}"; do echo "  - $U"; done
+fi
+
+echo ""
+echo "======================================"
