@@ -236,12 +236,16 @@ Get-ADUser -Filter * -Properties MemberOf, LastLogonDate | Select-Object Name, E
 "Guest","Administrator" | ForEach-Object { Disable-ADAccount -Identity $_; Write-Host "  Disabled: $_" -ForegroundColor Yellow }
 ```
 
-#### Reset privileged groups to default AD membership
+#### Secure privileged groups & unlink suspicious GPOs (surgical)
+
+> Nuclear version (strips ALL memberships from every user) is in `scripts/Strip-Groups-Nuclear.ps1`
+
 ```powershell
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  DESIRED STATE — default AD privileged group memberships                   ║
-# ║  Only Administrator should be in these. Everything else gets removed.      ║
-# ║  Groups listed here get their nested group memberships enforced too.       ║
+# ║  SURGICAL GROUP & GPO CLEANUP                                              ║
+# ║  - Only touches privileged groups (Domain Admins, Enterprise Admins, etc.) ║
+# ║  - Leaves custom/business groups alone (HR Admins, Finance, etc.)          ║
+# ║  - Unlinks (does NOT delete) non-default GPOs for manual review            ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # Our team users — added to all privileged groups
@@ -256,7 +260,9 @@ $excludeUsers = @(
     "krbtgt"
 )
 
-# Which users belong in which groups
+# ── Privileged groups: who belongs and who doesn't ───────────────────────────
+
+# Which users belong in which privileged groups
 $defaultUsers = @{
     "Domain Admins"          = $ourUsers
     "Enterprise Admins"      = $ourUsers
@@ -271,7 +277,7 @@ $defaultUsers = @{
     "Denied RODC Password Replication Group" = @("krbtgt")
 }
 
-# Which groups should be nested in which groups
+# Which groups should be nested in which privileged groups
 $defaultGroupNesting = @{
     "Administrators" = @()
     "Denied RODC Password Replication Group" = @(
@@ -289,6 +295,16 @@ $defaultGroupNesting = @{
     "Print Operators"        = @()
 }
 
+# GPOs that should stay linked (everything else gets unlinked, not deleted)
+$allowedGPOs = @(
+    "Default Domain Policy"
+    "Default Domain Controllers Policy"
+    "Hardening"
+)
+
+$DomainDN = (Get-ADDomain).DistinguishedName
+$skipUsers = @($excludeUsers) + @($ourUsers) + @("krbtgt")
+
 # ── Step 0: Create our users if they don't exist ─────────────────────────────
 foreach ($u in $ourUsers) {
     try {
@@ -300,7 +316,7 @@ foreach ($u in $ourUsers) {
     }
 }
 
-# ── Step 1: Backup ALL AD group memberships ──────────────────────────────────
+# ── Step 1: Backup ALL group memberships + GPO link state ────────────────────
 $backupFile = "C:\ad-groups-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
 $backupRows = @()
 foreach ($group in (Get-ADGroup -Filter *)) {
@@ -317,24 +333,42 @@ foreach ($group in (Get-ADGroup -Filter *)) {
     } catch {}
 }
 $backupRows | Export-Csv -Path $backupFile -NoTypeInformation
-Write-Host "[+] Backed up current state to $backupFile" -ForegroundColor Green
+Write-Host "[+] Backed up group memberships to $backupFile" -ForegroundColor Green
 
-# ── Step 2: Strip ALL group memberships from every user (except excluded) ────
-$skipUsers = @($excludeUsers) + @($ourUsers) + @("krbtgt")
-$allUsers = @(Get-ADUser -Filter * -Properties MemberOf | Where-Object { $_.SamAccountName -notin $skipUsers -and $_.MemberOf })
-
-Write-Host "`n=== PHASE 1: STRIP all group memberships ===" -ForegroundColor Cyan
-Write-Host "  Protected users: $($skipUsers -join ', ')" -ForegroundColor Green
-foreach ($u in $allUsers) {
-    $groups = ($u.MemberOf | ForEach-Object { ($_ -split ',')[0] -replace 'CN=' } | Where-Object {
-        $_ -ne 'Remote Desktop Users' -and -not ($u.SamAccountName -eq 'Administrator' -and $_ -eq 'Administrators')
-    }) -join ', '
-    if ($groups) { Write-Host "  $($u.SamAccountName) — $groups" -ForegroundColor Yellow }
+$gpoBackupFile = "C:\gpo-links-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
+$gpoRows = @()
+foreach ($ou in (Get-ADOrganizationalUnit -Filter * | Select-Object -ExpandProperty DistinguishedName)) {
+    try {
+        $links = (Get-GPInheritance -Target $ou).GpoLinks
+        foreach ($link in $links) {
+            $gpoRows += [PSCustomObject]@{
+                Target    = $ou
+                GPOName   = $link.DisplayName
+                Enabled   = $link.Enabled
+                Enforced  = $link.Enforced
+                Order     = $link.Order
+            }
+        }
+    } catch {}
 }
+# Also capture domain-level links
+$domainLinks = (Get-GPInheritance -Target $DomainDN).GpoLinks
+foreach ($link in $domainLinks) {
+    $gpoRows += [PSCustomObject]@{
+        Target    = $DomainDN
+        GPOName   = $link.DisplayName
+        Enabled   = $link.Enabled
+        Enforced  = $link.Enforced
+        Order     = $link.Order
+    }
+}
+$gpoRows | Export-Csv -Path $gpoBackupFile -NoTypeInformation
+Write-Host "[+] Backed up GPO link state to $gpoBackupFile" -ForegroundColor Green
 
-# ── Step 3: Dry run — privileged group changes ───────────────────────────────
-$toRemove = @()
-$toAdd    = @()
+# ── Step 2: Audit privileged groups (ONLY these — custom groups untouched) ───
+$toRemoveUsers  = @()
+$toRemoveGroups = @()
+$toAdd          = @()
 
 foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Object -Unique)) {
     try { $currentMembers = @(Get-ADGroupMember -Identity $groupName -ErrorAction Stop) } catch { continue }
@@ -342,12 +376,17 @@ foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Ob
     $allowedUsers  = if ($defaultUsers.ContainsKey($groupName))        { $defaultUsers[$groupName] }        else { @() }
     $allowedGroups = if ($defaultGroupNesting.ContainsKey($groupName)) { $defaultGroupNesting[$groupName] } else { @() }
 
+    # Find unauthorized users in privileged groups
     foreach ($m in $currentMembers) {
+        if ($m.objectClass -eq 'user' -and $m.SamAccountName -notin $allowedUsers -and $m.SamAccountName -notin $skipUsers) {
+            $toRemoveUsers += [PSCustomObject]@{ Group=$groupName; Member=$m.SamAccountName; DN=$m.distinguishedName }
+        }
         if ($m.objectClass -eq 'group' -and $m.SamAccountName -notin $allowedGroups -and $m.Name -notin $allowedGroups) {
-            $toRemove += [PSCustomObject]@{ Group=$groupName; Member=$m.Name; Type='group'; DN=$m.distinguishedName }
+            $toRemoveGroups += [PSCustomObject]@{ Group=$groupName; Member=$m.Name; DN=$m.distinguishedName }
         }
     }
 
+    # Find missing members that should be added
     $currentGroupNames = $currentMembers | Where-Object { $_.objectClass -eq 'group' } | ForEach-Object { $_.Name }
     foreach ($g in $allowedGroups) {
         if ($g -notin $currentGroupNames) {
@@ -362,12 +401,40 @@ foreach ($groupName in ($defaultUsers.Keys + $defaultGroupNesting.Keys | Sort-Ob
     }
 }
 
-Write-Host "`n=== PHASE 2: PRIVILEGED GROUP CHANGES ===" -ForegroundColor Cyan
-Write-Host "  Groups to fix: $($toRemove.Count) removals, $($toAdd.Count) additions" -ForegroundColor Yellow
-foreach ($r in $toRemove) { Write-Host "  REMOVE [$($r.Type)] $($r.Member) from $($r.Group)" -ForegroundColor Yellow }
-foreach ($a in $toAdd)    { Write-Host "  ADD    [$($a.Type)] $($a.Member) to $($a.Group)" -ForegroundColor Cyan }
+# ── Step 3: Find GPOs to unlink ──────────────────────────────────────────────
+$gpoTargets = @($DomainDN) + @(Get-ADOrganizationalUnit -Filter * | Select-Object -ExpandProperty DistinguishedName)
+$toUnlink = @()
+foreach ($target in $gpoTargets) {
+    try {
+        $links = (Get-GPInheritance -Target $target).GpoLinks
+        foreach ($link in $links) {
+            if ($link.DisplayName -notin $allowedGPOs -and $link.Enabled -eq "Yes") {
+                $toUnlink += [PSCustomObject]@{ Target=$target; GPOName=$link.DisplayName }
+            }
+        }
+    } catch {}
+}
 
-if ($allUsers.Count -eq 0 -and $toRemove.Count -eq 0 -and $toAdd.Count -eq 0) {
+# ── Step 4: Show dry run ─────────────────────────────────────────────────────
+Write-Host "`n=== PRIVILEGED GROUP CHANGES ===" -ForegroundColor Cyan
+if ($toRemoveUsers.Count -eq 0 -and $toRemoveGroups.Count -eq 0 -and $toAdd.Count -eq 0) {
+    Write-Host "  Privileged groups already clean." -ForegroundColor Green
+} else {
+    foreach ($r in $toRemoveUsers)  { Write-Host "  REMOVE [user]  $($r.Member) from $($r.Group)" -ForegroundColor Yellow }
+    foreach ($r in $toRemoveGroups) { Write-Host "  REMOVE [group] $($r.Member) from $($r.Group)" -ForegroundColor Yellow }
+    foreach ($a in $toAdd)          { Write-Host "  ADD    [$($a.Type)] $($a.Member) to $($a.Group)" -ForegroundColor Cyan }
+}
+
+Write-Host "`n=== GPO UNLINK (not delete) ===" -ForegroundColor Cyan
+if ($toUnlink.Count -eq 0) {
+    Write-Host "  No non-default GPOs linked." -ForegroundColor Green
+} else {
+    foreach ($u in $toUnlink) { Write-Host "  UNLINK '$($u.GPOName)' from $($u.Target)" -ForegroundColor Yellow }
+    Write-Host "  (GPOs will NOT be deleted — review in gpmc.msc)" -ForegroundColor Gray
+}
+
+$totalChanges = $toRemoveUsers.Count + $toRemoveGroups.Count + $toAdd.Count + $toUnlink.Count
+if ($totalChanges -eq 0) {
     Write-Host "`n[OK] Everything already matches desired state." -ForegroundColor Green
     return
 }
@@ -376,39 +443,17 @@ Write-Host ""
 $confirm = Read-Host "Proceed? (y/n)"
 if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
 
-# ── Step 4: Execute strip ────────────────────────────────────────────────────
-$groupMap = @{}
-foreach ($u in $allUsers) {
-    foreach ($g in $u.MemberOf) {
-        $gName = ($g -split ',')[0] -replace 'CN='
-        if ($gName -eq 'Remote Desktop Users') { continue }
-        if (-not $groupMap[$g]) { $groupMap[$g] = @() }; $groupMap[$g] += $u.SamAccountName
-    }
-}
-foreach ($g in @($groupMap.Keys)) {
-    $name = ($g -split ',')[0] -replace 'CN='
-    # Skip built-in groups that won't allow removal of built-in accounts
-    $groupMap[$g] = @($groupMap[$g] | Where-Object { -not ($_ -eq 'Administrator' -and $name -eq 'Administrators') })
-    if ($groupMap[$g].Count -eq 0) { continue }
-    try {
-        Remove-ADGroupMember -Identity $g -Members $groupMap[$g] -Confirm:$false
-        Write-Host "  STRIPPED $name — removed: $($groupMap[$g] -join ', ')" -ForegroundColor Green
-    } catch {
-        Write-Host "  FAILED to strip ${name}: $($_)" -ForegroundColor Red
-    }
-}
-
 # ── Step 5: Execute privileged group removals ────────────────────────────────
-foreach ($r in $toRemove) {
+foreach ($r in ($toRemoveUsers + $toRemoveGroups)) {
     try {
         Remove-ADGroupMember -Identity $r.Group -Members $r.DN -Confirm:$false
-        Write-Host "  REMOVED [$($r.Type)] $($r.Member) from $($r.Group)" -ForegroundColor Green
+        Write-Host "  REMOVED $($r.Member) from $($r.Group)" -ForegroundColor Green
     } catch {
         Write-Host "  FAILED to remove $($r.Member) from $($r.Group): $_" -ForegroundColor Red
     }
 }
 
-# ── Step 6: Execute privileged group additions (rebuild desired state) ───────
+# ── Step 6: Execute privileged group additions ───────────────────────────────
 foreach ($a in $toAdd) {
     try {
         Add-ADGroupMember -Identity $a.Group -Members $a.Member -ErrorAction Stop
@@ -418,7 +463,20 @@ foreach ($a in $toAdd) {
     }
 }
 
-Write-Host "`n  Done. Backup: $backupFile" -ForegroundColor Cyan
+# ── Step 7: Unlink non-default GPOs (disable link, do NOT delete) ────────────
+foreach ($u in $toUnlink) {
+    try {
+        Set-GPLink -Name $u.GPOName -Target $u.Target -LinkEnabled No -ErrorAction Stop
+        Write-Host "  UNLINKED '$($u.GPOName)' from $($u.Target)" -ForegroundColor Green
+    } catch {
+        Write-Host "  FAILED to unlink '$($u.GPOName)': $_" -ForegroundColor Red
+    }
+}
+
+Write-Host "`n  Done. Backups:" -ForegroundColor Cyan
+Write-Host "    Groups: $backupFile" -ForegroundColor Gray
+Write-Host "    GPOs:   $gpoBackupFile" -ForegroundColor Gray
+Write-Host "    Review unlinked GPOs in gpmc.msc — delete manually if malicious" -ForegroundColor Gray
 ```
 
 **Reset krbtgt twice (DC only)** — kills Golden Tickets. Reset twice because AD keeps current + previous hash. Do this manually through Active Directory Users and Computers: right-click `krbtgt` > Reset Password. Run it **twice** back-to-back. May briefly break Kerberos auth.
@@ -598,6 +656,17 @@ if ($os.ProductType -ne 2) {
     exit 1
 }
 Write-Setting "Running on Domain Controller: $($env:COMPUTERNAME)"
+
+# Detect OS version for feature support
+$osBuild = [int]$os.BuildNumber
+# RelaxMinimumPasswordLengthLimits requires build 19041+ (Win10 2004 / Server 2022)
+# Server 2019 = build 17763, Server 2022 = build 20348
+$isLegacyPasswordPolicy = $osBuild -lt 19041
+if ($isLegacyPasswordPolicy) {
+    Write-Warn "Server 2019 or older detected (build $osBuild) — password length capped at 14"
+} else {
+    Write-Setting "Modern OS detected (build $osBuild) — full password policy support"
+}
 
 # Import required modules
 foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
@@ -849,18 +918,25 @@ if ($runPasswordPolicy) {
     $ddpInfPath = "$ddpSecEditPath\GptTmpl.inf"
 
     # Enable MinimumPasswordLength > 14 (required before setting length to 16)
-    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\SAM" `
-        -Name "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord -Force
-    Write-Setting "RelaxMinimumPasswordLengthLimits = 1 (allows MinPasswordLength > 14)"
+    # Server 2019 does not support RelaxMinimumPasswordLengthLimits — cap at 14
+    if (-not $isLegacyPasswordPolicy) {
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\SAM" `
+            -Name "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord -Force
+        Write-Setting "RelaxMinimumPasswordLengthLimits = 1 (allows MinPasswordLength > 14)"
 
-    Set-GPRegistryValue -Name "Default Domain Policy" `
-        -Key "HKLM\System\CurrentControlSet\Control\SAM" `
-        -ValueName "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord | Out-Null
-    Write-Setting "RelaxMinimumPasswordLengthLimits pushed via Default Domain Policy GPO"
+        Set-GPRegistryValue -Name "Default Domain Policy" `
+            -Key "HKLM\System\CurrentControlSet\Control\SAM" `
+            -ValueName "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord | Out-Null
+        Write-Setting "RelaxMinimumPasswordLengthLimits pushed via Default Domain Policy GPO"
+    } else {
+        Write-Warn "Skipping RelaxMinimumPasswordLengthLimits (not supported on build $osBuild)"
+    }
+
+    $minPwdLen = if ($isLegacyPasswordPolicy) { 14 } else { 16 }
 
     # NIST SP 800-63B 2024: length-based policy, no composition rules
     $pwdSettings = [ordered]@{
-        MinimumPasswordLength = 16
+        MinimumPasswordLength = $minPwdLen
         PasswordHistorySize   = 24
         MinimumPasswordAge    = 0
         MaximumPasswordAge    = -1
@@ -869,6 +945,13 @@ if ($runPasswordPolicy) {
         LockoutBadCount       = 10
         ResetLockoutCount     = 15
         LockoutDuration       = 15
+    }
+
+    # AllowAdministratorLockout was added in Server 2022 (KB5020282) — doesn't exist on 2019
+    if (-not $isLegacyPasswordPolicy) {
+        $pwdSettings["AllowAdministratorLockout"] = 1
+    } else {
+        Write-Warn "Skipping AllowAdministratorLockout (not supported on build $osBuild)"
     }
 
     if (Test-Path $ddpInfPath) {
@@ -927,7 +1010,7 @@ Revision=1
 
     # NIST SP 800-63B 2024: complexity disabled (no composition rules)
     Set-ADDefaultDomainPasswordPolicy -Identity $Domain `
-        -MinPasswordLength 16 `
+        -MinPasswordLength $minPwdLen `
         -PasswordHistoryCount 24 `
         -MinPasswordAge ([TimeSpan]::Zero) `
         -MaxPasswordAge ([TimeSpan]::Zero) `
@@ -950,7 +1033,7 @@ Revision=1
     }
 
     $adPwd = Get-ADDefaultDomainPasswordPolicy -Identity $Domain
-    Test-Result "AD MinPasswordLength" "16" "$($adPwd.MinPasswordLength)"
+    Test-Result "AD MinPasswordLength" "$minPwdLen" "$($adPwd.MinPasswordLength)"
     Test-Result "AD PasswordHistoryCount" "24" "$($adPwd.PasswordHistoryCount)"
     Test-Result "AD ComplexityEnabled" "False" "$($adPwd.ComplexityEnabled)"
     Test-Result "AD LockoutThreshold" "10" "$($adPwd.LockoutThreshold)"
@@ -1163,7 +1246,7 @@ if ($runPasswordPolicy) {
     $netAccounts = net accounts 2>&1
     foreach ($line in $netAccounts) {
         if ($line -match "Minimum password length\s+(\d+)") {
-            Test-Result "Effective MinPasswordLength" "16" $Matches[1]
+            Test-Result "Effective MinPasswordLength" "$minPwdLen" $Matches[1]
         }
         if ($line -match "Lockout threshold\s+(\d+)") {
             Test-Result "Effective LockoutThreshold" "10" $Matches[1]
@@ -3552,5 +3635,195 @@ Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" `
 gpupdate /force
 Write-Host "[+] GPO import complete" -ForegroundColor Green
 ```
+
+</details>
+
+<details>
+<summary>WinStride — HTTP first, HTTPS after validation</summary>
+
+WinStride collects Windows Security, PowerShell, Sysmon, autorun, process, and network telemetry into a local SQLite-backed API + web UI. For competition, get HTTP working first and only turn on HTTPS after you validate certificates end-to-end.
+
+> [!IMPORTANT]
+> Use the current SQLite/setup-scripts branch in your WinStride checkout. In the working copy this is `setup-scripts-merge-main`. If that branch name changes later, use the branch that contains `scripts\setup-winstride.ps1`, `scripts\start-winstride.ps1`, and `scripts\install-run-agent.ps1`.
+
+### Ports
+
+| Port | Service | Direction |
+|------|---------|-----------|
+| 5173 | Web UI | Browser -> Server |
+| 5090 | API (HTTP) | Agent -> Server |
+| 7097 | API (HTTPS + mTLS) | Agent -> Server |
+
+### Part A: Server setup (HTTP first)
+
+#### 1. Clone and prepare
+
+```powershell
+git clone <repo-url> WinStride
+cd WinStride
+git checkout setup-scripts-merge-main
+.\scripts\setup-winstride.ps1
+```
+
+What `setup-winstride.ps1` actually does right now:
+- Checks or installs .NET 8 SDK and Node.js
+- Validates the repo layout
+- Prompts about Windows Firewall
+- If you say yes to firewall changes, it prints manual `New-NetFirewallRule` commands with explicit IP/CIDR allow-list placeholders
+- It does **not** silently open the port to all IPs
+
+#### 2. Start the platform
+
+```powershell
+.\scripts\start-winstride.ps1
+```
+
+This opens separate windows for:
+- API on `http://localhost:5090`
+- Swagger on `http://localhost:5090/swagger`
+- Web UI on `http://localhost:5173`
+- Local agent as Administrator
+
+Use flags if needed:
+```powershell
+.\scripts\start-winstride.ps1 -NoAgent
+.\scripts\start-winstride.ps1 -NoWeb
+```
+
+#### 3. Domain-scoped firewall examples
+
+Use explicit allow lists. Do not open these ports broadly.
+
+```powershell
+New-NetFirewallRule -DisplayName "WinStride API TCP 5090" `
+    -Direction Inbound -Action Allow -Enabled True `
+    -Profile Domain -Protocol TCP -LocalPort 5090 `
+    -RemoteAddress '10.0.0.10,10.0.0.11,10.0.1.0/24'
+
+New-NetFirewallRule -DisplayName "WinStride Web UI TCP 5173" `
+    -Direction Inbound -Action Allow -Enabled True `
+    -Profile Domain -Protocol TCP -LocalPort 5173 `
+    -RemoteAddress '10.0.0.10,10.0.0.11,10.0.1.0/24'
+```
+
+#### 4. Verify
+
+```powershell
+Invoke-WebRequest http://localhost:5090/swagger
+Start-Process http://localhost:5173
+Test-NetConnection SERVER-IP -Port 5090
+```
+
+### Part B: Agent on another Windows host (preferred: full repo checkout)
+
+> [!IMPORTANT]
+> This is the fastest path when you pull the whole repo onto the Windows host. Agent must run as Administrator. Sysmon should already be installed from Step 1 of this playbook.
+
+#### 1. Pull the same repo branch on the target host
+
+```powershell
+git clone <repo-url> C:\WinStride
+cd C:\WinStride
+git checkout setup-scripts-merge-main
+```
+
+#### 2. Install/run the agent for remote HTTP
+
+```powershell
+.\scripts\install-run-agent.ps1 -ServerAddress "SERVER-IP"
+```
+
+What this does:
+- Uses the shipped HTTP defaults unchanged for `localhost:5090`
+- For remote HTTP, updates only `baseUrl`
+- Validates connectivity
+- Builds the agent
+- Starts it in a new PowerShell window
+- Fails cleanly and prints the manual `config.yaml` value if it cannot update the config automatically
+
+If you only want to configure/build:
+```powershell
+.\scripts\install-run-agent.ps1 -ServerAddress "SERVER-IP" -NoStart
+```
+
+#### 3. Outbound firewall example on the agent host
+
+```powershell
+New-NetFirewallRule -DisplayName "WinStride Agent HTTP Outbound" `
+    -Direction Outbound -Action Allow -Enabled True `
+    -Profile Domain -Protocol TCP -RemotePort 5090 `
+    -RemoteAddress 'SERVER-IP'
+```
+
+#### 4. Verify
+
+Open the WinStride web UI and check Heartbeats. The machine should appear within about 60 seconds.
+
+### Part C: HTTPS follow-up with AD CS
+
+Do this only after HTTP is stable.
+
+#### 1. Generate certificates on the server
+
+```powershell
+.\scripts\setup-certs.ps1 -CAName "YOUR-DOMAIN-CA" `
+    -ServerDnsNames @("server.domain.local", "10.0.0.5", "localhost")
+```
+
+This script:
+- Enrolls a server certificate for `WinStride-Server`
+- Enrolls and exports a client certificate PFX for agents
+- Writes `ServerCertThumbprint` into `appsettings.json`
+- Updates the repo agent `config.yaml` for HTTPS
+
+#### 2. Important HTTPS caveat
+
+Current code and current cert setup are not perfectly aligned:
+- `setup-certs.ps1` installs the server cert into `Cert:\LocalMachine\My`
+- the current API code looks for `ServerCertThumbprint` in `Cert:\CurrentUser\My`
+
+Validate this before relying on HTTPS during competition. If HTTPS does not come up, import the same server cert into `Cert:\CurrentUser\My` for the account running the API or fix the API store location before game day.
+
+#### 3. Configure remote HTTPS agents
+
+If the remote host has the full repo:
+```powershell
+.\scripts\install-run-agent.ps1 -UseHttps -ServerAddress "SERVER-IP" -PfxPath ".\WinStride-Agent.pfx"
+```
+
+If you only copied the PFX + helper script:
+```powershell
+.\setup-agent.ps1 -PfxPath ".\WinStride-Agent.pfx" -ServerIP "SERVER-IP"
+```
+
+#### 4. Trust the CA root on agent machines
+
+Domain-joined machines with Enterprise CA should receive the root automatically through Group Policy. If they do not:
+
+```powershell
+Import-Certificate -FilePath "\\SERVER-IP\share\ca-root.cer" `
+    -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+#### 5. HTTPS firewall example
+
+```powershell
+New-NetFirewallRule -DisplayName "WinStride API TCP 7097" `
+    -Direction Inbound -Action Allow -Enabled True `
+    -Profile Domain -Protocol TCP -LocalPort 7097 `
+    -RemoteAddress '10.0.0.10,10.0.0.11,10.0.1.0/24'
+```
+
+### Troubleshooting
+
+| Problem | Check |
+|---------|-------|
+| API DLL locked during build | Stop the running API window first, then rebuild |
+| Agent DLL locked during build | Stop the running agent window first, then rebuild |
+| No heartbeats | Agent must be running as Administrator; check the agent console for config or cert errors |
+| API unreachable | `Test-NetConnection SERVER-IP -Port 5090` or `7097`; verify explicit firewall allow list |
+| HTTPS agent cert error | `Get-ChildItem Cert:\CurrentUser\My` and verify the thumbprint matches `certSubject` |
+| HTTPS API startup issue | Check whether the server cert is in `CurrentUser\My` for the account running the API |
+| Autoruns data missing | Ensure `autorunsc.exe` is present under the agent's `Binaries` folder |
 
 </details>

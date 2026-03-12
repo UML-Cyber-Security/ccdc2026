@@ -137,13 +137,13 @@ To follow CIS Benchmark and NIST 800-63B recommendations:
 ### Password Policy (NIST SP 800-63B 2024)
 - **Enforce password history** = 24 passwords remembered
 - **Minimum password age** = 0
-- **Minimum password length** = 16 characters
+- **Minimum password length** = 16 characters (14 on Server 2019)
 - **Password must meet complexity requirements** = Disabled
 
 ### Account Lockout Policy
 - **Account lockout duration** = 15 minutes
 - **Account lockout threshold** = 10 invalid logon attempts
-- **Allow Administrator account lockout** = Enabled
+- **Allow Administrator account lockout** = Enabled (Server 2022+ only, not available on 2019)
 - **Reset account lockout counter after** 15 minutes
 
 ---

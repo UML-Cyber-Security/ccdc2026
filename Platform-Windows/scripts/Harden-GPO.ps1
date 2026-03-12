@@ -67,6 +67,17 @@ if ($os.ProductType -ne 2) {
 }
 Write-Setting "Running on Domain Controller: $($env:COMPUTERNAME)"
 
+# Detect OS version for feature support
+$osBuild = [int]$os.BuildNumber
+# RelaxMinimumPasswordLengthLimits requires build 19041+ (Win10 2004 / Server 2022)
+# Server 2019 = build 17763, Server 2022 = build 20348
+$isLegacyPasswordPolicy = $osBuild -lt 19041
+if ($isLegacyPasswordPolicy) {
+    Write-Warn "Server 2019 or older detected (build $osBuild) — password length capped at 14"
+} else {
+    Write-Setting "Modern OS detected (build $osBuild) — full password policy support"
+}
+
 # Import required modules
 foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
     if (-not (Get-Module -ListAvailable -Name $mod)) {
@@ -317,18 +328,25 @@ if ($runPasswordPolicy) {
     $ddpInfPath = "$ddpSecEditPath\GptTmpl.inf"
 
     # Enable MinimumPasswordLength > 14 (required before setting length to 16)
-    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\SAM" `
-        -Name "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord -Force
-    Write-Setting "RelaxMinimumPasswordLengthLimits = 1 (allows MinPasswordLength > 14)"
+    # Server 2019 does not support RelaxMinimumPasswordLengthLimits — cap at 14
+    if (-not $isLegacyPasswordPolicy) {
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\SAM" `
+            -Name "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord -Force
+        Write-Setting "RelaxMinimumPasswordLengthLimits = 1 (allows MinPasswordLength > 14)"
 
-    Set-GPRegistryValue -Name "Default Domain Policy" `
-        -Key "HKLM\System\CurrentControlSet\Control\SAM" `
-        -ValueName "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord | Out-Null
-    Write-Setting "RelaxMinimumPasswordLengthLimits pushed via Default Domain Policy GPO"
+        Set-GPRegistryValue -Name "Default Domain Policy" `
+            -Key "HKLM\System\CurrentControlSet\Control\SAM" `
+            -ValueName "RelaxMinimumPasswordLengthLimits" -Value 1 -Type DWord | Out-Null
+        Write-Setting "RelaxMinimumPasswordLengthLimits pushed via Default Domain Policy GPO"
+    } else {
+        Write-Warn "Skipping RelaxMinimumPasswordLengthLimits (not supported on build $osBuild)"
+    }
+
+    $minPwdLen = if ($isLegacyPasswordPolicy) { 14 } else { 16 }
 
     # NIST SP 800-63B 2024: length-based policy, no composition rules
     $pwdSettings = [ordered]@{
-        MinimumPasswordLength = 16
+        MinimumPasswordLength = $minPwdLen
         PasswordHistorySize   = 24
         MinimumPasswordAge    = 0
         MaximumPasswordAge    = -1
@@ -337,6 +355,13 @@ if ($runPasswordPolicy) {
         LockoutBadCount       = 10
         ResetLockoutCount     = 15
         LockoutDuration       = 15
+    }
+
+    # AllowAdministratorLockout was added in Server 2022 (KB5020282) — doesn't exist on 2019
+    if (-not $isLegacyPasswordPolicy) {
+        $pwdSettings["AllowAdministratorLockout"] = 1
+    } else {
+        Write-Warn "Skipping AllowAdministratorLockout (not supported on build $osBuild)"
     }
 
     if (Test-Path $ddpInfPath) {
@@ -395,7 +420,7 @@ Revision=1
 
     # NIST SP 800-63B 2024: complexity disabled (no composition rules)
     Set-ADDefaultDomainPasswordPolicy -Identity $Domain `
-        -MinPasswordLength 16 `
+        -MinPasswordLength $minPwdLen `
         -PasswordHistoryCount 24 `
         -MinPasswordAge ([TimeSpan]::Zero) `
         -MaxPasswordAge ([TimeSpan]::Zero) `
@@ -418,7 +443,7 @@ Revision=1
     }
 
     $adPwd = Get-ADDefaultDomainPasswordPolicy -Identity $Domain
-    Test-Result "AD MinPasswordLength" "16" "$($adPwd.MinPasswordLength)"
+    Test-Result "AD MinPasswordLength" "$minPwdLen" "$($adPwd.MinPasswordLength)"
     Test-Result "AD PasswordHistoryCount" "24" "$($adPwd.PasswordHistoryCount)"
     Test-Result "AD ComplexityEnabled" "False" "$($adPwd.ComplexityEnabled)"
     Test-Result "AD LockoutThreshold" "10" "$($adPwd.LockoutThreshold)"
@@ -624,7 +649,7 @@ if ($runPasswordPolicy) {
     $netAccounts = net accounts 2>&1
     foreach ($line in $netAccounts) {
         if ($line -match "Minimum password length\s+(\d+)") {
-            Test-Result "Effective MinPasswordLength" "16" $Matches[1]
+            Test-Result "Effective MinPasswordLength" "$minPwdLen" $Matches[1]
         }
         if ($line -match "Lockout threshold\s+(\d+)") {
             Test-Result "Effective LockoutThreshold" "10" $Matches[1]
