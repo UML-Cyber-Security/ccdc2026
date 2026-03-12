@@ -2121,7 +2121,7 @@ Replace the search term with whatever you're looking for.
 
 #### Local accounts (run on every machine)
 ```powershell
-$excludedUsers = @("Administrator", "Guest")
+$excludedUsers = @("blackteam", "black-team", "svc_local")
 $logFile = "$env:USERPROFILE\Desktop\local_passwords.csv"
 "Username,NewPassword" | Out-File -FilePath $logFile
 
@@ -2146,7 +2146,7 @@ Write-Host "`n[*] Passwords saved to $logFile" -ForegroundColor Cyan
 #### AD accounts (DC only)
 ```powershell
 Import-Module ActiveDirectory
-$excludedUsers = @("Administrator", "krbtgt")
+$excludedUsers = @("blackteam", "black-team", "krbtgt")
 $logFile = "$env:USERPROFILE\Desktop\domain_passwords.csv"
 "Username,NewPassword" | Out-File -FilePath $logFile
 
