@@ -80,6 +80,8 @@
 `alert http any any -> $HOME_NET $HTTP_PORTS (msg:"WEB Directory Traversal Attempt"; http.uri; content:"../"; sid:1000330; rev:1;)`
 
 # Normal Rulesets
-`alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Large outbound data transfer >1MB"; flow:established,to_server; stream_size:client,>,1048576; threshold:type limit, track by_src, count 1, sid:1000030; rev:1;)`
-`alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Long-duration outbound connection"; flow:established,to_server; threshold:type limit, track by_src, count 1, seconds 3600; sid:1000040; rev:1;)`
-`alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Rapid repeated connections - Possible beacons"; flow:to_server; threshold:type both, track by_src, count 5, seconds 60; sid:1000050; rev:1;)`
+```
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Large outbound data transfer >1MB"; flow:established,to_server; stream_size:client,>,1048576; threshold:type limit, track by_src, count 1, sid:1000030; rev:1;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Long-duration outbound connection"; flow:established,to_server; threshold:type limit, track by_src, count 1, seconds 3600; sid:1000040; rev:1;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Rapid repeated connections - Possible beacons"; flow:to_server; threshold:type both, track by_src, count 5, seconds 60; sid:1000050; rev:1;)
+```
