@@ -3639,191 +3639,91 @@ Write-Host "[+] GPO import complete" -ForegroundColor Green
 </details>
 
 <details>
-<summary>WinStride — HTTP first, HTTPS after validation</summary>
+<summary>WinStride Service Setup</summary>
 
-WinStride collects Windows Security, PowerShell, Sysmon, autorun, process, and network telemetry into a local SQLite-backed API + web UI. For competition, get HTTP working first and only turn on HTTPS after you validate certificates end-to-end.
+### Server
 
-> [!IMPORTANT]
-> Use the current SQLite/setup-scripts branch in your WinStride checkout. In the working copy this is `setup-scripts-merge-main`. If that branch name changes later, use the branch that contains `scripts\setup-winstride.ps1`, `scripts\start-winstride.ps1`, and `scripts\install-run-agent.ps1`.
-
-### Ports
-
-| Port | Service | Direction |
-|------|---------|-----------|
-| 5173 | Web UI | Browser -> Server |
-| 5090 | API (HTTP) | Agent -> Server |
-| 7097 | API (HTTPS + mTLS) | Agent -> Server |
-
-### Part A: Server setup (HTTP first)
-
-#### 1. Clone and prepare
+From the existing WinStride folder:
 
 ```powershell
-git clone <repo-url> WinStride
-cd WinStride
-git checkout setup-scripts-merge-main
-.\scripts\setup-winstride.ps1
+cd C:\WinStride
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-winstride.ps1 -Auto
+powershell -ExecutionPolicy Bypass -File .\scripts\start-winstride.ps1
 ```
 
-What `setup-winstride.ps1` actually does right now:
-- Checks or installs .NET 8 SDK and Node.js
-- Validates the repo layout
-- Prompts about Windows Firewall
-- If you say yes to firewall changes, it prints manual `New-NetFirewallRule` commands with explicit IP/CIDR allow-list placeholders
-- It does **not** silently open the port to all IPs
+This:
+- checks or installs `.NET 8` and Node.js
+- installs `WinStrideApi` and `WinStrideAgent` Windows services
+- starts the web UI on `http://localhost:5173`
+- tries to create the WinStride API firewall rule from AD computer IPs if this box is the domain controller
+- prints manual firewall commands if that discovery fails
 
-#### 2. Start the platform
-
-```powershell
-.\scripts\start-winstride.ps1
-```
-
-This opens separate windows for:
-- API on `http://localhost:5090`
-- Swagger on `http://localhost:5090/swagger`
-- Web UI on `http://localhost:5173`
-- Local agent as Administrator
-
-Use flags if needed:
-```powershell
-.\scripts\start-winstride.ps1 -NoAgent
-.\scripts\start-winstride.ps1 -NoWeb
-```
-
-#### 3. Domain-scoped firewall examples
-
-Use explicit allow lists. Do not open these ports broadly.
+Verify:
 
 ```powershell
-New-NetFirewallRule -DisplayName "WinStride API TCP 5090" `
-    -Direction Inbound -Action Allow -Enabled True `
-    -Profile Domain -Protocol TCP -LocalPort 5090 `
-    -RemoteAddress '10.0.0.10,10.0.0.11,10.0.1.0/24'
-
-New-NetFirewallRule -DisplayName "WinStride Web UI TCP 5173" `
-    -Direction Inbound -Action Allow -Enabled True `
-    -Profile Domain -Protocol TCP -LocalPort 5173 `
-    -RemoteAddress '10.0.0.10,10.0.0.11,10.0.1.0/24'
-```
-
-#### 4. Verify
-
-```powershell
+Get-Service WinStrideApi,WinStrideAgent
 Invoke-WebRequest http://localhost:5090/swagger
 Start-Process http://localhost:5173
+```
+
+### Firewall allow-list update
+
+HTTP:
+
+```powershell
+Get-NetFirewallRule -DisplayName "WinStride API TCP 5090" |
+  Get-NetFirewallAddressFilter |
+  Set-NetFirewallAddressFilter -RemoteAddress @("10.0.0.10","10.0.0.11","10.0.1.0/24")
+```
+
+HTTPS:
+
+```powershell
+Get-NetFirewallRule -DisplayName "WinStride API TCP 7097" |
+  Get-NetFirewallAddressFilter |
+  Set-NetFirewallAddressFilter -RemoteAddress @("10.0.0.10","10.0.0.11","10.0.1.0/24")
+```
+
+### Remote agent HTTP
+
+On the other Windows machine, from the existing WinStride folder:
+
+```powershell
+cd C:\WinStride
+powershell -ExecutionPolicy Bypass -File .\scripts\install-run-agent.ps1
+```
+
+That assumes the WinStride server is the domain controller. If not:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-run-agent.ps1 -ServerAddress "dc01.corp.local"
+```
+
+### HTTPS
+
+On the server:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-certs.ps1 -CAName "YOUR-DOMAIN-CA"
+```
+
+On the agent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-run-agent.ps1 -UseHttps -PfxPath ".\WinStride-Agent.pfx"
+```
+
+If the WinStride server is not the domain controller:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-run-agent.ps1 -UseHttps -PfxPath ".\WinStride-Agent.pfx" -ServerAddress "server.domain.local"
+```
+
+### Quick checks
+
+```powershell
+Restart-Service WinStrideApi,WinStrideAgent
 Test-NetConnection SERVER-IP -Port 5090
 ```
-
-### Part B: Agent on another Windows host (preferred: full repo checkout)
-
-> [!IMPORTANT]
-> This is the fastest path when you pull the whole repo onto the Windows host. Agent must run as Administrator. Sysmon should already be installed from Step 1 of this playbook.
-
-#### 1. Pull the same repo branch on the target host
-
-```powershell
-git clone <repo-url> C:\WinStride
-cd C:\WinStride
-git checkout setup-scripts-merge-main
-```
-
-#### 2. Install/run the agent for remote HTTP
-
-```powershell
-.\scripts\install-run-agent.ps1 -ServerAddress "SERVER-IP"
-```
-
-What this does:
-- Uses the shipped HTTP defaults unchanged for `localhost:5090`
-- For remote HTTP, updates only `baseUrl`
-- Validates connectivity
-- Builds the agent
-- Starts it in a new PowerShell window
-- Fails cleanly and prints the manual `config.yaml` value if it cannot update the config automatically
-
-If you only want to configure/build:
-```powershell
-.\scripts\install-run-agent.ps1 -ServerAddress "SERVER-IP" -NoStart
-```
-
-#### 3. Outbound firewall example on the agent host
-
-```powershell
-New-NetFirewallRule -DisplayName "WinStride Agent HTTP Outbound" `
-    -Direction Outbound -Action Allow -Enabled True `
-    -Profile Domain -Protocol TCP -RemotePort 5090 `
-    -RemoteAddress 'SERVER-IP'
-```
-
-#### 4. Verify
-
-Open the WinStride web UI and check Heartbeats. The machine should appear within about 60 seconds.
-
-### Part C: HTTPS follow-up with AD CS
-
-Do this only after HTTP is stable.
-
-#### 1. Generate certificates on the server
-
-```powershell
-.\scripts\setup-certs.ps1 -CAName "YOUR-DOMAIN-CA" `
-    -ServerDnsNames @("server.domain.local", "10.0.0.5", "localhost")
-```
-
-This script:
-- Enrolls a server certificate for `WinStride-Server`
-- Enrolls and exports a client certificate PFX for agents
-- Writes `ServerCertThumbprint` into `appsettings.json`
-- Updates the repo agent `config.yaml` for HTTPS
-
-#### 2. Important HTTPS caveat
-
-Current code and current cert setup are not perfectly aligned:
-- `setup-certs.ps1` installs the server cert into `Cert:\LocalMachine\My`
-- the current API code looks for `ServerCertThumbprint` in `Cert:\CurrentUser\My`
-
-Validate this before relying on HTTPS during competition. If HTTPS does not come up, import the same server cert into `Cert:\CurrentUser\My` for the account running the API or fix the API store location before game day.
-
-#### 3. Configure remote HTTPS agents
-
-If the remote host has the full repo:
-```powershell
-.\scripts\install-run-agent.ps1 -UseHttps -ServerAddress "SERVER-IP" -PfxPath ".\WinStride-Agent.pfx"
-```
-
-If you only copied the PFX + helper script:
-```powershell
-.\setup-agent.ps1 -PfxPath ".\WinStride-Agent.pfx" -ServerIP "SERVER-IP"
-```
-
-#### 4. Trust the CA root on agent machines
-
-Domain-joined machines with Enterprise CA should receive the root automatically through Group Policy. If they do not:
-
-```powershell
-Import-Certificate -FilePath "\\SERVER-IP\share\ca-root.cer" `
-    -CertStoreLocation Cert:\LocalMachine\Root
-```
-
-#### 5. HTTPS firewall example
-
-```powershell
-New-NetFirewallRule -DisplayName "WinStride API TCP 7097" `
-    -Direction Inbound -Action Allow -Enabled True `
-    -Profile Domain -Protocol TCP -LocalPort 7097 `
-    -RemoteAddress '10.0.0.10,10.0.0.11,10.0.1.0/24'
-```
-
-### Troubleshooting
-
-| Problem | Check |
-|---------|-------|
-| API DLL locked during build | Stop the running API window first, then rebuild |
-| Agent DLL locked during build | Stop the running agent window first, then rebuild |
-| No heartbeats | Agent must be running as Administrator; check the agent console for config or cert errors |
-| API unreachable | `Test-NetConnection SERVER-IP -Port 5090` or `7097`; verify explicit firewall allow list |
-| HTTPS agent cert error | `Get-ChildItem Cert:\CurrentUser\My` and verify the thumbprint matches `certSubject` |
-| HTTPS API startup issue | Check whether the server cert is in `CurrentUser\My` for the account running the API |
-| Autoruns data missing | Ensure `autorunsc.exe` is present under the agent's `Binaries` folder |
 
 </details>
