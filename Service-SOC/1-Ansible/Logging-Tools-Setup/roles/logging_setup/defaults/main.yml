@@ -1,0 +1,2 @@
+auditd_path: /location/of/auditd_script
+sysmon_path: /location/of/sysmon_script

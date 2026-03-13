@@ -1,0 +1,11 @@
+# Auditd Usage: sudo ./auditd.sh
+- name: Install auditd
+  ansible.builtin.script:
+    cmd: "{{ auditd_path }}"
+  become: true
+
+# Sysmon Usage: sudo ./sysmon.sh
+- name: Install sysmon
+  ansible.builtin.script:
+    cmd: "{{ sysmon_path }}"
+  become: true
