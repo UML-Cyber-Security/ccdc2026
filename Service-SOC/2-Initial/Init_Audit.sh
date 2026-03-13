@@ -1,11 +1,28 @@
 #!/bin/bash
 # Linux Audit Script
-# UML and RIT edits
+# RIT with UML edits
 # Must be run as superuser #
 
 if [ "$EUID" -ne 0 ]; then
   echo "Must run as superuser"
   exit
+fi
+
+# -------- Output Logging Option --------
+if [[ -z "$AUDIT_LOGGING" ]]; then
+  echo "Save output to file?"
+  echo "1) Yes"
+  echo "2) No (default)"
+  read -p "Choice: " log_choice
+
+  if [[ "$log_choice" == "1" ]]; then
+    timestamp_file="InitAudit_$(hostname)_$(date +%Y%m%d_%H%M%S).log"
+    echo "Logging to: $timestamp_file"
+
+    # Prevent loop and re-run script with tee
+    export AUDIT_LOGGING=1
+    exec > >(tee -a "$timestamp_file") 2>&1
+  fi
 fi
 
 sl="sleep"
@@ -14,30 +31,30 @@ t="0s"
 
 timestamp() {
   echo -e "\n------------------------------"
-  echo -e "-------- Init_Audit.sh --------"
+  echo -e "-------  Init_Audit.sh  -------"
   echo -e "------------------------------\n"
-  echo -e "\n\n-------- $(date) --------\n\n"
+  echo -e "-------- $(date) --------\n\n"
 }
 
 basic(){
-    echo -e "\n-------------\n > Machine INFO <\n------------- "
+    echo -e "\n------------------\n > Machine INFO <\n------------------"
+    echo "OPERATING SYSTEM: "
     $s cat /etc/os-release | grep -i PRETTY_NAME
+    echo "HOSTNAME "
     $s cat /etc/hostname
-    echo -e "Most likely MAC below(check this)"
+    echo -e "MAC ADDRESS (check this)"
     $s ip a | grep -i link/ether | head -n 1
 
     echo -e "\nHardware: "
     $s lscpu | grep -i Architecture
 
-    echo -e "\n"
-    $s df -h
     sleep $t
 
     echo -e "\n-------------\n > Aliases <\n------------- "
     alias
     sleep $t
 
-    echo -e "\n--------------\n > SSH Keys <\n-------------- "
+    echo -e "\n------------------------\n > SSH Keys (Only first 20 lines) <\n-------------------------- "
     $s cat /etc/ssh/sshd_config | grep -i AuthorizedKeysFile
     $s head -n 20 /home/*/.ssh/authorized_keys*
     $s head -n 20 /root/.ssh/authorized_keys*
@@ -46,7 +63,7 @@ basic(){
     echo -e "\n-----------------------\n > User Accounts <\n----------------------- "
     echo -e "/home directory: "
     $s ls /home/
-    echo -e "All users w/ shells: \n"
+    echo -e "\n\nAll users w/ shells: \n"
     user_list=$(grep -E "/bin/(bash|sh|zsh|fish)" /etc/passwd | cut -d':' -f1); # shells to check for
 
     for user in $user_list; do
@@ -54,7 +71,7 @@ basic(){
     done
     sleep $t
 
-    echo -e "\n-------------\n > Important Groups <\n------------- "
+    echo -e "\n-------------------\n > Important Groups <\n------------------- "
     $s cat /etc/group | grep -i root
     $s cat /etc/group | grep -i wheel
     $s cat /etc/group | grep -i sudo
@@ -63,38 +80,46 @@ basic(){
     $s cat /etc/group | grep -i crontab
     sleep $t
 
-    echo -e "\n-------------\n > .bashrc Command Check <\n------------- "
-    $s cat /home/*/.bashrc | grep -Ei 'exec |.sh |systemctl'
+    echo -e "\n-----------------------\n > .bashrc Command Check <\n------------------------ "
+    $s cat /home/*/.bashrc | grep -Ei 'exec | \.sh |systemctl'
     echo -e "\n"
-    $s cat /root/.bashrc | grep -Ei 'exec |.sh |systemctl'
-    echo -e "\n"
-    $s tail -n 7 /home/*/.bashrc
+    $s cat /root/.bashrc | grep -Ei 'exec | \.sh |systemctl'
     echo -e "\n"
     $s tail -n 7 /root/.bashrc
     echo -e "\n"
     sleep $t
 
-    echo -e "\n-------------\n > /etc/profile Check <\n------------- "
-    $s tail -n 7 /etc/profile
+    echo -e "\n------------------\n > /etc/profile Check <\n------------------ "
+    echo -e "/etc/profile.d/ directory: "
+    ls /etc/profile.d/
+
+    echo "\n"
+    $s grep -Ei 'exec|bash|sh|curl|wget|nc|python' /etc/profile /etc/profile.d/*.sh 2>/dev/null
     sleep $t
 
-    echo -e "\n-------------\n > SSHD Config Check <\n------------- "
+    echo -e "\n-------------------\n > SSHD Config Check <\n------------------- "
     cat /etc/ssh/sshd_config | grep -i Include
+    echo -e "\n.conf file includes: (check these!)"
+    ls /etc/ssh/sshd_config.d/
     echo -e "\n"
     cat /etc/ssh/sshd_config | grep -i PasswordAuthentication | head -n 1
     cat /etc/ssh/sshd_config | grep -i PubkeyAuthentication | head -n 1
     cat /etc/ssh/sshd_config | grep -i PermitRootLogin | head -n 1
     cat /etc/ssh/sshd_config | grep -i X11Forwarding
-    echo -e "\n.conf file includes: (check these!)"
-    ls /etc/ssh/sshd_config.d/
+    cat /etc/ssh/sshd_config | grep -i match | head -n 5
+ 
     sleep $t
 
     echo -e "\n--------------------\n > Auth Backdoors <\n-------------------- "
+    echo -e "\nsudoers file includes: (check these!)"
+    ls /etc/sudoers.d/
+    echo -e "\n"
     $s cat /etc/sudoers | grep NOPASS
     $s cat /etc/sudoers | grep NOPASSWD
     $s cat /etc/sudoers | grep !AUTH
     $s find / -type f \( -name ".rhosts" -o -name ".shosts" -o -name "hosts.equiv" \) -exec ls -l {} \;
     cat /etc/sudoers | grep -i secure_path=
+
     sleep $t
 
     echo -e "\n-------------------------\n > Currently Logged In <\n------------------------- "
@@ -111,7 +136,7 @@ basic(){
     sleep $t
 
     echo -e "\n-------------------------------\n > Current Network Listening <\n------------------------------- "
-    $s ss -tulpnw
+    $s ss -tulnps
     sleep $t
 
     echo -e "\n-----------------\n > lsof Remote <\n----------------- "
@@ -129,7 +154,7 @@ basic(){
 }
 
 verbose(){
-    echo -e "\n-------------\n > Wazuh Agent Check <\n------------- "
+    echo -e "\n-------------------\n > Wazuh Agent Check <\n-------------------- "
     $s test -e /var/ossec/etc/ossec.conf && echo "Agent ossec.conf exists" || echo "Agent ossec.conf file is missing!"
     echo -e "Manager IP: "
     $s cat /var/ossec/etc/ossec.conf | grep -i "<address>"
@@ -152,7 +177,7 @@ verbose(){
 
     sleep $t
 
-    echo -e "\n-------------\n > History Traces <\n------------- "
+    echo -e "\n-------------\n > Potential (bad) History <\n------------- "
     $s find /home/* -name "docker-compose"
 
     echo -e "Bash history snippet: "
@@ -160,11 +185,20 @@ verbose(){
     $s tail -n 350 /home/*/.bash_history | grep -Ei 'compose|curl|apt|yum|dnf|wget|git clone|docker|ctr|pip|snap|sudo'
     sleep $t
 
-    echo -e "\n-------------\n > Auto Runs <\n------------- "
+    echo -e "\n------------------\n > Auto Runs <\n------------------- "
     $s cat /etc/crontab | grep -Ev '#|PATH|SHELL'
     $s cat /etc/cron.d/* | grep -Ev '#|PATH|SHELL'
-    $s find /var/spool/cron/crontabs/ -printf '%p\n' -exec cat {} \;
-    $s systemctl list-timers
+    $s cat /var/spool/cron/crontabs/root 
+    echo -e "EXTRA CRONTABS: "
+
+  for file in /var/spool/cron/crontabs/*; do
+    [ -f "$file" ] || continue
+    echo -e "\n----- $file -----"
+    $s cat "$file"
+  done
+
+    echo -e "\nSystemctl list-timers: "
+    $s systemctl list-timers --no-pager
     sleep $t
 
     echo -e "\n---------------\n > Processes <\n--------------- "
@@ -179,14 +213,14 @@ verbose(){
     $s ip route
     sleep $t
 
-    echo -e "\n---------------\n > Ips and macs <\n--------------- "
+    echo -e "\n----------------------\n > Ips and macs <\n----------------------- "
     ip -c route | grep "default"
     echo -e ""
     ip -br -c a
     echo -e "\n[MAC]"
     ip -br -c link
 
-    echo -e "\n---------------\n > Services <\n--------------- "
+    echo -e "\n---------------------\n > Services <\n----------------------- "
     $s find /etc/systemd/system -name "*.service" -exec cat {} + | grep ExecStart | cut -d "=" -f2  | grep -Ev "\!\!"
     sleep $t
 
@@ -234,13 +268,13 @@ verbose(){
     sleep $t
 
     echo -e "\n------------------\n > Active Running Services <\n------------------ "
-    $s systemctl list-units --type=service --state=running
+    $s systemctl list-units --type=service --state=running --no-pager
     sleep $t
 }
 
 # Get User Input to get sleep time and Type
 timestamp
-echo -ne "Enter Option (Default : Basic)\n1) Basic Mode\n2) Verbose Mode\n\n : "
+echo -ne "Enter Option (Default : Verbose)\n1) Basic Mode\n2) Verbose Mode\n\n : "
 read opt
 echo -n "Pause Time For Each Section (Default 0) : "
 read sec
