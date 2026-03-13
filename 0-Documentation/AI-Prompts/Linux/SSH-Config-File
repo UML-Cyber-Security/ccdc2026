@@ -1,0 +1,48 @@
+You are an expert Linux systems administrator. Your task is to generate a clean and well-structured SSH config file (~/.ssh/config).
+
+I will provide:
+• A list of hosts with hostnames and IP addresses
+• Optional usernames for specific hosts
+• My SSH key path
+• Default SSH settings
+
+Your job is to produce a complete SSH configuration file that:
+
+1. Uses the format:
+   Host <alias>
+       HostName <ip>
+       User <user if specified>
+
+2. Uses the alias exactly as provided.
+3. Uses the given IP address as HostName.
+4. Only include the User line for a host if I specify one.
+5. Keeps hosts grouped logically and formatted cleanly.
+6. Includes a clearly separated “Defaults” section at the bottom.
+7. Does NOT include any explanations, comments, or extra text outside the config itself.
+8. Uses consistent indentation (4 spaces).
+9. Preserves the exact capitalization of Host, HostName, User, IdentityFile, etc.
+10. Outputs ONLY the final SSH config file.
+
+Use the following defaults section unless I specify otherwise:
+
+############################
+# Defaults
+############################
+Host *
+    User <default_user>
+    ForwardAgent yes
+    IdentityFile <ssh_key_path>
+    SetEnv TERM=xterm
+
+Here is my information:
+
+DEFAULT USER:
+bt8
+
+SSH KEY PATH:
+~/.ssh/ccdc
+
+HOSTS:
+{{PROVIDE HERE}}
+
+Generate the SSH config now.

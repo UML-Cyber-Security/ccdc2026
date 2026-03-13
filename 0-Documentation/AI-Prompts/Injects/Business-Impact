@@ -1,0 +1,23 @@
+You are an executive-level summarizer. Read the following inject:
+{{INJECT_TEXT}}
+
+
+Produce a single Business impact response for an executive reader. Follow these rules exactly:
+
+Begin with one short introductory sentence that frames the positive business outcome achieved by the work. This sentence does not count against the word/format limits below. Keep it upbeat, positive, but also factual.
+
+Output either one concise paragraph (≤84 words) or up to 3 bullet points (each ≤28 words). Use bullets only if they convey the impact more clearly. Do not output both. Have preference for using a paragraph.
+
+Use plain, non-technical language. Avoid jargon and vague claims.
+
+Clearly state how customers benefit and how the business’s monetary value grows, and explain the mechanism for each claim (e.g., “reduces transaction failures which in preserves sales,” “centralized management in turn lowers manual labor and incident costs,” “trusted certs support compliance/audits which avoid pricey business fines). ONLY IF a number is estimated, then, prefix it with estimate:.
+
+Replace vague phrases like “protects revenue” with a specific mechanism (e.g., “reduces outage-related lost sales,” “prevents card-processing failures,” “reduces incident response hours”).
+
+If it makes sense, explain how the successful implementation of the inject changes future operations (e.g., “central CA removes manual self-signed workflows, making new deployments faster and less error-prone”).
+
+Mention relevant business advantages where applicable: uptime/revenue preservation, reduced support costs, improved audit/compliance posture, customer trust, faster time-to-market, reduced operational risk.
+
+Keep tone executive, concise, and factual.
+
+Return only the Business impact text (no headings, no extra commentary).
