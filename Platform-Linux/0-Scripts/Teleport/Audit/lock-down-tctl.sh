@@ -1,19 +1,14 @@
 #!/bin/bash
-#############################################################################
-# This script makes is so that only Root can run the CLI for Teleport. 
-#############################################################################
+# Edits permissions for the tctl binary to only allow root to execute
 
-#######################################
-# Root check
-#######################################
+# Run as root
 if [[ "$EUID" -ne 0 ]]; then
     echo "Error: Run this script as root."
     exit 1
 fi
 
-#######################################
-# Lock down tctl to root/sudo only
-#######################################
+# Set tctl binary location here
+# Symlink is okay!
 BINARIES=("/usr/local/bin/tctl")
 
 for BIN in "${BINARIES[@]}"; do

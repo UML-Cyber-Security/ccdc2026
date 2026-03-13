@@ -1,22 +1,19 @@
 #!/bin/bash
 
 # Teleport User Audit / Modification Script
-# No role preview
 # Supports Bare Metal or Podman deployments
+
+# Todo: Add docker compatability
 
 set -euo pipefail
 
-#######################################
-# Root check
-#######################################
+# Run as root
 if [[ "$EUID" -ne 0 ]]; then
     echo "Error: Run this script as root."
     exit 1
 fi
 
-#######################################
 # Mode selection
-#######################################
 echo "Select Teleport deployment type:"
 echo "1) Bare metal"
 echo "2) Podman"
@@ -40,9 +37,7 @@ else
     }
 fi
 
-#######################################
-# Get users (clean list)
-#######################################
+# Get all users as a clean list
 echo ""
 echo "[*] Retrieving users..."
 USERS=$(run_tctl users ls 2>/dev/null | awk 'NR>1 && $1 !~ /^-+$/ {print $1}')
@@ -52,17 +47,12 @@ echo "[*] Starting interactive review"
 echo "[!] Actions execute immediately."
 echo ""
 
-#######################################
-# Tracking arrays
-#######################################
 KEPT_USERS=()
 DELETED_USERS=()
 ROLES_REMOVED_USERS=()
 LOCKED_USERS=()
 
-#######################################
-# Loop through users
-#######################################
+# Loop through all users one by one
 for USER in $USERS; do
     echo "----------------------------------"
     echo "User: $USER"
@@ -134,9 +124,7 @@ done
 
 echo "[*] User review complete."
 
-#######################################
-# Summary
-#######################################
+# Script output summary
 echo ""
 echo "======================================"
 echo "           AUDIT SUMMARY"
