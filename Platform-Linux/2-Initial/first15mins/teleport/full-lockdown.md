@@ -109,22 +109,17 @@ After running the command, a one-time signup link will be generated. Open it in 
 
 ## Step 5: Monitor Who Is Logged In
 
-Run this script in a dedicated terminal. It will refresh every 2 minutes showing both active node sessions and recent logins.
+To see all active sessions go to this URL on the teleport web ui:
 
-Script is located at: `/Platform-Linux/0-Scripts/Teleport/check-whos-logged-in.sh`
-
-```bash
-sudo bash /Platform-Linux/0-Scripts/Teleport/check-whos-logged-in.sh
+```
+https://<TELEPORT-IP>/web/cluster/my-teleport-cluster/sessions
 ```
 
-Press `Ctrl+C` to stop. The monitor shows two sections each refresh:
+To see the audit log go to:
 
-| Section | What It Shows |
-|---------|--------------|
-| Active Sessions | Users currently connected to a node/agent right now |
-| Recent Logins | Users who have logged into Teleport via web UI or tsh |
-
-> **Note:** A user can appear in Recent Logins without appearing in Active Sessions — this means they are logged into Teleport but not currently connected to any node.
+```
+https://<TELEPORT-IP>/web/cluster/my-teleport-cluster/audit
+```
 
 ---
 
