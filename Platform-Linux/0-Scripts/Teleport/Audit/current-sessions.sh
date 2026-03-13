@@ -1,16 +1,15 @@
 #!/bin/bash
 
-#######################################
-# Root check
-#######################################
+# CURRENTLY NOT WORKING! Only working on older versions? < 18 
+# Sessions most likely need to be viewed through tsh - no tctl support
+
+# Run as root
 if [[ "$EUID" -ne 0 ]]; then
     echo "Error: Run this script as root."
     exit 1
 fi
 
-#######################################
 # Mode selection
-#######################################
 echo "Select Teleport deployment type:"
 echo "1) Bare metal"
 echo "2) Podman"
@@ -33,9 +32,7 @@ else
     }
 fi
 
-#######################################
-# Watch loop
-#######################################
+# Recurring watch loop
 echo ""
 echo "[*] Monitoring active Teleport sessions every 2 minutes."
 echo "[*] Press Ctrl+C to stop."
