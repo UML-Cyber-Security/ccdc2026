@@ -1,0 +1,38 @@
+############################
+# ChefOps
+############################
+
+Host chefops-gitea
+HostName 192.168.4.195
+#ProxyJump chefops-pfsense
+
+Host chefops-grafana
+HostName 10.0.2.53
+#ProxyJump chefops-pfsense
+
+Host chefops-pfsense
+HostName 192.168.4.191
+#User blueteam
+
+Host chefops-teleport
+HostName 192.168.4.192
+
+
+############################
+# Ocean Crest
+############################
+
+Host ocean-pfsense
+HostName 192.168.4.211
+#User blueteam
+
+
+############################
+# Defaults
+############################
+
+Host *
+User btx
+ForwardAgent yes
+IdentityFile ~/.ssh/ccdc
+SetEnv TERM=xterm
