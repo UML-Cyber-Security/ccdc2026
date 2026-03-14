@@ -1,0 +1,60 @@
+- name: Prepare Ubuntu nodes for Docker Swarm
+  hosts: kiosk
+  become: true
+
+  tasks:
+    - name: Install Docker and dependencies
+      ansible.builtin.apt:
+        update_cache: yes
+        pkg:
+          - docker.io
+          - containerd
+          - ca-certificates
+          - curl
+          - jq
+          - gnupg
+          - lsb-release
+
+    - name: Ensure Docker config directory exists
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+
+    - name: Configure Docker daemon.json
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+        content: |
+          {
+            "insecure-registries": ["10.0.2.55:5000"]
+          }
+
+    - name: Enable and start Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create directories for service bind mounts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /opt/data
+        - /opt/data/jenkins
+        - /opt/data/portainer
+        - /opt/data/backups
+        - /opt/data/secrets
+
+    - name: Ensure docker group exists
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Add bt7 to docker group
+      ansible.builtin.user:
+        name: bt7
+        groups: docker
+        append: yes
