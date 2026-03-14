@@ -1,0 +1,70 @@
+---
+- name: CCDC Emergency Account Containment
+  hosts: wordpress
+  become: yes
+  vars:
+    whitelist:
+      - root
+      - blackteam
+      - semaphore
+      - bt1
+      - bt2
+      - bt3
+      - bt4
+      - bt5
+      - bt6
+      - bt7
+      # - bt8
+      - bt9
+      - bt10
+      - bt11
+      - bt12
+      - rocky
+      - nobody
+      - phoenix
+
+  tasks:
+    - name: 1. Get list of all human users (UID >= 1000)
+      # We move this to the top so 'all_users' is available for Task 0
+      shell: "getent passwd | awk -F: '$3 >= 1000 {print $1}'"
+      register: all_users
+      changed_when: false
+
+    - name: 2. EMERGENCY UNLOCK for critical accounts
+      user:
+        name: "{{ item }}"
+        password_lock: no
+        shell: /bin/bash
+      # We combine the whitelist with root to ensure they are accessible
+      loop: "{{ whitelist | intersect(all_users.stdout_lines + ['root']) }}"
+      ignore_errors: yes
+
+    - name: 3. Backup passwd and shadow files
+      copy:
+        src: "{{ item }}"
+        dest: "{{ item }}.pre_lock.bak"
+        remote_src: yes
+      loop:
+        - /etc/passwd
+        - /etc/shadow
+
+    - name: 4. Lock unauthorized accounts
+      user:
+        name: "{{ item }}"
+        password_lock: yes
+        shell: /sbin/nologin
+      when: item not in whitelist
+      loop: "{{ all_users.stdout_lines }}"
+      register: lock_results
+
+    - name: 5. Kill active sessions for locked users
+      shell: "pkill -9 -u {{ item }}"
+      when: item not in whitelist
+      loop: "{{ all_users.stdout_lines }}"
+      failed_when: false
+
+    - name: 6. Generate Evidence Report
+      debug:
+        msg: "Locked user: {{ item.item }}"
+      when: item.changed | default(false)
+      loop: "{{ lock_results.results }}"
