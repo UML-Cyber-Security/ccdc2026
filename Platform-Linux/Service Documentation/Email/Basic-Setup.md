@@ -73,9 +73,9 @@ smtpd_sasl_path = private/auth
 smtpd_sasl_auth_enable = yes
 ```
 
-For Dovecot, edit ```/etc/dovecot/conf.d/10-ssl.conf```. Also, leaving these default *mishgt* still work?
+For Dovecot, edit ```/etc/dovecot/conf.d/10-ssl.conf```. Also, leaving these default *might* still work?
 ```
-ssl = required  # can be set to yes here
+ssl = required
 ssl_cert = </etc/ssl/certs/mailserver.crt
 ssl_key = </etc/ssl/private/mailserver.key
 ```
