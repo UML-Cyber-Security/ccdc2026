@@ -1,26 +1,26 @@
 - name: Register Microsoft repo for Debian family
   ansible.builtin.shell: |
-    wget -q https://packages.microsoft.com/config/{{ ansible_distributions | lower }}/{{ ansible_distribution_version.split('.')[0] }}/packages-microsoft-prod.deb -0 /tmp/packages-microsoft-prod.deb
+    wget -q https://packages.microsoft.com/config/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_version'] }}/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb
     dpkg -i /tmp/packages-microsoft-prod.deb
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Register Microsoft repo for RedHat family
   ansible.builtin.shell: |
-    rpm -Uvh https://packages.microsoft.com/config/{{ 'fedora' if ansible_distribution == 'Fedora' else 'rhel' }}/$(. /etc/os-release && echo ${VERSION_ID%%.*})/packages-microsoft-prod.rpm
-  when: ansible_os_family == "RedHat"
+    rpm -Uvh https://packages.microsoft.com/config/{{ 'fedora' if ansible_facts['distribution'] == 'Fedora' else 'rhel' }}/$(. /etc/os-release && echo ${VERSION_ID%%.*})/packages-microsoft-prod.rpm
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Install Sysmon for Debian
   ansible.builtin.apt:
     name: sysmonforlinux
     state: present
     update_cache: yes
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Install Sysmon for RedHat
   ansible.builtin.package:
     name: sysmonforlinux
     state: present
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Create sysmon config directory
   ansible.builtin.file:
