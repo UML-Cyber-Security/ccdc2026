@@ -1,6 +1,6 @@
 ---
 - name: Install logging tools
-  hosts: onprem-debian, onprem-ubuntu, onprem-fedora
+  hosts: ADD_HOSTS_HERE
   become: true
   roles:
     - Sysmon
