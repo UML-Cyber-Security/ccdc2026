@@ -1,5 +1,0 @@
----
-- name: Install logging tools
-  hosts: debian, rhel
-  roles:
-    - logging_setup

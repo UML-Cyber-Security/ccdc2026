@@ -1,0 +1,67 @@
+- name: Register Microsoft repo for Debian family
+  ansible.builtin.shell: |
+    wget -q https://packages.microsoft.com/config/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_version'] }}/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb
+    dpkg -i /tmp/packages-microsoft-prod.deb
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Register Microsoft repo for RedHat family
+  ansible.builtin.shell: |
+    rpm -Uvh https://packages.microsoft.com/config/{{ 'fedora' if ansible_facts['distribution'] == 'Fedora' else 'rhel' }}/$(. /etc/os-release && echo ${VERSION_ID%%.*})/packages-microsoft-prod.rpm
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Install Sysmon for Debian
+  ansible.builtin.apt:
+    name: sysmonforlinux
+    state: present
+    update_cache: yes
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install Sysmon for RedHat
+  ansible.builtin.package:
+    name: sysmonforlinux
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Create sysmon config directory
+  ansible.builtin.file:
+    path: /etc/sysmon
+    state: directory
+    mode: '0755'
+
+- name: Create sysmon config file
+  ansible.builtin.copy:
+    dest: /etc/sysmon/config.xml
+    mode: '0644'
+    content: |
+      <Sysmon schemaversion="4.70">
+        <EventFiltering>
+          <!-- Log all process creation (Event ID 1) -->
+          <RuleGroup name="" groupRelation="or">
+            <ProcessCreate onmatch="include">
+              <Rule groupRelation="or">
+                <Image condition="begin with">/</Image>
+              </Rule>
+            </ProcessCreate>
+          </RuleGroup>
+          
+          <!-- Log all network connections (Event ID 3) -->
+          <RuleGroup name="" groupRelation="or">
+            <NetworkConnect onmatch="include">
+              <Rule groupRelation="or">
+                <Image condition="begin with">/</Image>
+              </Rule>
+            </NetworkConnect>
+          </RuleGroup>
+        </EventFiltering>
+      </Sysmon>
+
+- name: Initialize Sysmon
+  ansible.builtin.command: sysmon -accepteula -i /etc/sysmon/config.xml
+  args:
+    creates: /opt/sysmon/sysmon
+
+- name: Enable and start Sysmon
+  ansible.builtin.systemd:
+    name: sysmon
+    enabled: true
+    state: started
