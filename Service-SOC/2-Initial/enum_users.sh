@@ -1,13 +1,17 @@
 #!/bin/bash
 
 OUTPUT="users.txt"
-> "$OUTPUT"  # Clear file if it exists
+> "$OUTPUT"  # Clears and recreates the file on each run
 
-echo "root" >> "$OUTPUT"
+COUNT=1
+
+echo "$COUNT. root" >> "$OUTPUT"
+COUNT=$((COUNT + 1))
 
 while IFS=: read -r username _ uid _ _ _ shell; do
     if [[ "$uid" -ge 1000 && "$shell" != */nologin && "$shell" != */false ]]; then
-        echo "$username" >> "$OUTPUT"
+        echo "$COUNT. $username" >> "$OUTPUT"
+        COUNT=$((COUNT + 1))
     fi
 done < /etc/passwd
 
