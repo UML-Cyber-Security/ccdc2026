@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# Usage: ./script.sh -t user@example.com -s "Alert" -b "Issue detected" -f "ccdc-node1"
+
+# -t:  send address
+# -s, -b:    subject and body of message
+# f:    from, sets the user identity
 set -euo pipefail
 
 TO=""
