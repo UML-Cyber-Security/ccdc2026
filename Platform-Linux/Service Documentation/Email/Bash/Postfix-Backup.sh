@@ -9,7 +9,7 @@ REMOTE_USER="youruser"
 REMOTE_HOST="your.mail.server.ip"
 SSH_PORT=22
 
-LOCAL_BACKUP_DIR="$HOME/postfix-backup"
+LOCAL_BACKUP_DIR="$HOME/service-backups/postfix-backup"
 
 ### =========================
 ### FLAGS
