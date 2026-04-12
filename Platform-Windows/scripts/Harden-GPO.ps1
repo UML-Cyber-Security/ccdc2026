@@ -88,8 +88,10 @@ foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
     Write-Setting "Module loaded: $mod"
 }
 
-$Domain = (Get-ADDomain).DNSRoot
-$DomainDN = (Get-ADDomain).DistinguishedName
+$adDomain = Get-ADDomain
+$Domain = $adDomain.DNSRoot
+$DomainDN = $adDomain.DistinguishedName
+$DomainSID = $adDomain.DomainSID.Value
 Write-Setting "Domain: $Domain ($DomainDN)"
 
 # ── Backup existing GPOs ────────────────────────────────────────────────────
@@ -230,6 +232,8 @@ AuditAccountManage = 3
 AuditProcessTracking = 3
 AuditDSAccess = 3
 AuditAccountLogon = 3
+[Privilege Rights]
+SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,*$DomainSID-513
 "@
     $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
     Write-Setting "GptTmpl.inf written (7 categories enabled, 2 disabled)"

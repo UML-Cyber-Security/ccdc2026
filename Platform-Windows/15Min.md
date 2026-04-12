@@ -473,6 +473,23 @@ foreach ($u in $toUnlink) {
     }
 }
 
+# ── Step 8: Add de-privileged users to Remote Desktop Users ─────────────────
+Write-Host "`n=== REMOTE DESKTOP ACCESS ===" -ForegroundColor Cyan
+foreach ($r in $toRemoveUsers) {
+    if ($r.Group -in @("Domain Admins","Administrators","Enterprise Admins")) {
+        try {
+            Add-ADGroupMember -Identity "Remote Desktop Users" -Members $r.Member -ErrorAction Stop
+            Write-Host "  ADDED $($r.Member) to Remote Desktop Users (was in $($r.Group))" -ForegroundColor Green
+        } catch {
+            if ($_.Exception.Message -match "already a member") {
+                Write-Host "  OK $($r.Member) already in Remote Desktop Users" -ForegroundColor Gray
+            } else {
+                Write-Host "  FAILED to add $($r.Member) to Remote Desktop Users: $_" -ForegroundColor Red
+            }
+        }
+    }
+}
+
 Write-Host "`n  Done. Backups:" -ForegroundColor Cyan
 Write-Host "    Groups: $backupFile" -ForegroundColor Gray
 Write-Host "    GPOs:   $gpoBackupFile" -ForegroundColor Gray
@@ -484,7 +501,7 @@ Write-Host "    Review unlinked GPOs in gpmc.msc — delete manually if maliciou
 </details>
 
 <details>
-<summary><b>3. Review & Kick Active Sessions</b> — Show/kill RDP, disable SSH/WinRM</summary>
+<summary><b>3. Review & Kick Active Sessions</b> — Show/kill RDP, disable SSH/WinRM, clean shares/mounts</summary>
 
 > [!WARNING]
 > **Disabling an account does NOT kick active sessions.** You must also logoff/terminate existing sessions.
@@ -535,6 +552,72 @@ Stop-Service sshd -Force -ErrorAction SilentlyContinue
 Set-Service sshd -StartupType Disabled -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName "Block SSH Inbound" -Direction Inbound -Protocol TCP -LocalPort 22,2222 -Action Block -ErrorAction SilentlyContinue
 Write-Host "[+] SSH killed, disabled, and blocked" -ForegroundColor Green
+```
+
+#### Audit & remove non-default shares, disconnect mapped drives
+```powershell
+$isDC = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole -ge 4
+$adShares = @("NETLOGON", "SYSVOL")
+
+# ── Backup current shares ──────────────────────────────────────────────────
+$backupFile = "C:\shares-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
+$shares = Get-SmbShare -ErrorAction SilentlyContinue
+$shares | Select-Object Name, Path, Description, ScopeName | Export-Csv -Path $backupFile -NoTypeInformation
+Write-Host "[+] Backed up share list to $backupFile" -ForegroundColor Green
+
+# ── Show all shares ────────────────────────────────────────────────────────
+Write-Host "`n=== SMB Shares ===" -ForegroundColor Cyan
+$toRemove = @()
+foreach ($s in $shares) {
+    if ($s.Name -match '^\w\$$|^ADMIN\$$|^IPC\$$') {
+        Write-Host "  [ADMIN] $($s.Name) -> $($s.Path)" -ForegroundColor DarkGray
+        continue
+    }
+    if ($isDC -and $s.Name -in $adShares) {
+        Write-Host "  [AD-OK] $($s.Name) -> $($s.Path)" -ForegroundColor DarkGray
+        continue
+    }
+    $access = Get-SmbShareAccess -Name $s.Name -ErrorAction SilentlyContinue
+    $perms = ($access | ForEach-Object { "$($_.AccountName):$($_.AccessRight)" }) -join ", "
+    Write-Host "  [FOUND] $($s.Name) -> $($s.Path)  ($perms)" -ForegroundColor Yellow
+    $toRemove += $s
+}
+
+# ── Show mapped drives ────────────────────────────────────────────────────
+Write-Host "`n=== Mapped Drives ===" -ForegroundColor Cyan
+$mapped = net use 2>&1 | Where-Object { $_ -match "^\s*(OK|Disconnected|Unavailable)" }
+if ($mapped) {
+    $mapped | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+} else {
+    Write-Host "  No mapped drives" -ForegroundColor Green
+}
+
+# ── Confirm before deleting ────────────────────────────────────────────────
+$totalChanges = $toRemove.Count + $(if ($mapped) { 1 } else { 0 })
+if ($totalChanges -eq 0) {
+    Write-Host "`n[OK] Nothing to clean up." -ForegroundColor Green
+    return
+}
+
+Write-Host ""
+$confirm = Read-Host "Remove $($toRemove.Count) share(s) and disconnect mapped drives? (y/n)"
+if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
+
+foreach ($s in $toRemove) {
+    try {
+        Remove-SmbShare -Name $s.Name -Force -ErrorAction Stop
+        Write-Host "  [REMOVED] $($s.Name)" -ForegroundColor Green
+    } catch {
+        Write-Host "  [FAILED] $($s.Name) — $_" -ForegroundColor Red
+    }
+}
+
+if ($mapped) {
+    net use * /delete /yes 2>&1 | Out-Null
+    Write-Host "  [+] All mapped drives disconnected" -ForegroundColor Green
+}
+
+Write-Host "`n  Backup: $backupFile" -ForegroundColor Gray
 ```
 
 </details>
@@ -678,8 +761,10 @@ foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
     Write-Setting "Module loaded: $mod"
 }
 
-$Domain = (Get-ADDomain).DNSRoot
-$DomainDN = (Get-ADDomain).DistinguishedName
+$adDomain = Get-ADDomain
+$Domain = $adDomain.DNSRoot
+$DomainDN = $adDomain.DistinguishedName
+$DomainSID = $adDomain.DomainSID.Value
 Write-Setting "Domain: $Domain ($DomainDN)"
 
 # ── Backup existing GPOs ────────────────────────────────────────────────────
@@ -820,6 +905,8 @@ AuditAccountManage = 3
 AuditProcessTracking = 3
 AuditDSAccess = 3
 AuditAccountLogon = 3
+[Privilege Rights]
+SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,*$DomainSID-513
 "@
     $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
     Write-Setting "GptTmpl.inf written (7 categories enabled, 2 disabled)"
@@ -3418,6 +3505,29 @@ Write-Host "[+] WinRM killed, disabled, and blocked" -ForegroundColor Green
 qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|Disc")) { logoff $matches[1] } }
 # Kick a specific session (get ID from qwinsta)
 logoff SESSION_ID
+```
+
+#### Network Shares & Mounts
+```powershell
+# List all shares on this machine
+net share
+# Same via PowerShell (more detail — paths, permissions)
+Get-SmbShare | Format-Table Name, Path, Description -AutoSize
+# Show permissions on a specific share
+Get-SmbShareAccess -Name "ShareName"
+
+# List mapped network drives / remote mounts
+net use
+# Same via PowerShell
+Get-SmbMapping
+
+# Delete a share
+net share ShareName /delete
+# Delete via PowerShell
+Remove-SmbShare -Name "ShareName" -Force
+
+# Disconnect a mapped drive
+net use Z: /delete
 ```
 
 #### Sigcheck (verify signed binaries)

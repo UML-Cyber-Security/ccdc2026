@@ -180,4 +180,19 @@ foreach ($a in $toAdd) {
     }
 }
 
+# ── Step 7: Add de-privileged users to Remote Desktop Users ─────────────────
+Write-Host "`n=== REMOTE DESKTOP ACCESS ===" -ForegroundColor Cyan
+foreach ($u in $allUsers) {
+    try {
+        Add-ADGroupMember -Identity "Remote Desktop Users" -Members $u.SamAccountName -ErrorAction Stop
+        Write-Host "  ADDED $($u.SamAccountName) to Remote Desktop Users" -ForegroundColor Green
+    } catch {
+        if ($_.Exception.Message -match "already a member") {
+            Write-Host "  OK $($u.SamAccountName) already in Remote Desktop Users" -ForegroundColor Gray
+        } else {
+            Write-Host "  FAILED to add $($u.SamAccountName) to Remote Desktop Users: $_" -ForegroundColor Red
+        }
+    }
+}
+
 Write-Host "`n  Done. Backup: $backupFile" -ForegroundColor Cyan
