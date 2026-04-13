@@ -1,35 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### =========================
 ### GLOBAL CONFIG
-### =========================
 REMOTE_USER="youruser"
 REMOTE_HOST="your.server.ip"
 SSH_PORT=22
 
 BASE_BACKUP_DIR="$HOME/service-backups"
 
-### =========================
 ### SERVICE CONFIG
-### =========================
 SERVICE_NAME="dovecot"
 
 REMOTE_PATHS=(
   "/etc/dovecot"
 )
 
-### =========================
 ### MACHINE NAME (SAFE FALLBACK)
-### =========================
 HOSTNAME_REMOTE=$(ssh -p "$SSH_PORT" "$REMOTE_USER@$REMOTE_HOST" "hostname" 2>/dev/null || echo "$REMOTE_HOST")
 
 ### sanitize hostname for filesystem safety
 HOST_DIR=$(echo "$HOSTNAME_REMOTE" | tr '/ ' '__')
 
-### =========================
 ### OUTPUT SETUP
-### =========================
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 
 DEST="$BASE_BACKUP_DIR/$HOST_DIR/$SERVICE_NAME/$TIMESTAMP"
@@ -41,9 +33,7 @@ echo "[+] Host      : $HOST_DIR"
 echo "[+] Service   : $SERVICE_NAME"
 echo "[+] Target    : $DEST"
 
-### =========================
 ### BACKUP FILES (NO SUDO)
-### =========================
 for REMOTE_PATH in "${REMOTE_PATHS[@]}"; do
 
   echo "[+] Pulling: $REMOTE_PATH"
@@ -61,18 +51,14 @@ for REMOTE_PATH in "${REMOTE_PATHS[@]}"; do
 
 done
 
-### =========================
 ### RUNTIME SNAPSHOT
-### =========================
 echo "[+] Capturing runtime config..."
 
 ssh -p "$SSH_PORT" "$REMOTE_USER@$REMOTE_HOST" \
   "command -v $SERVICE_NAME >/dev/null 2>&1 && $SERVICE_NAME -n 2>/dev/null || true" \
   > "$DEST/${SERVICE_NAME}_runtime.txt" || true
 
-### =========================
 ### UPDATE LATEST POINTER
-### =========================
 rm -f "$LATEST_LINK"
 ln -s "$TIMESTAMP" "$LATEST_LINK"
 

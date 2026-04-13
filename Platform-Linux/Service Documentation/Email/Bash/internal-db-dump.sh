@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### =========================
 ### CONFIG (EDIT THIS)
-### =========================
-
 # Choose one:
 #   mysql | postgres | sqlite
 DB_TYPE="mysql"
@@ -18,9 +15,7 @@ mkdir -p "$DEST"
 echo "[+] Database type : $DB_TYPE"
 echo "[+] Backup dest    : $DEST"
 
-### =========================
 ### MYSQL / MARIADB
-### =========================
 if [[ "$DB_TYPE" == "mysql" ]]; then
 
   if command -v mysqldump >/dev/null 2>&1; then
@@ -35,9 +30,7 @@ if [[ "$DB_TYPE" == "mysql" ]]; then
   fi
 fi
 
-### =========================
 ### POSTGRESQL
-### =========================
 if [[ "$DB_TYPE" == "postgres" ]]; then
 
   if command -v pg_dumpall >/dev/null 2>&1; then
@@ -52,9 +45,7 @@ if [[ "$DB_TYPE" == "postgres" ]]; then
   fi
 fi
 
-### =========================
 ### SQLITE
-### =========================
 if [[ "$DB_TYPE" == "sqlite" ]]; then
 
   echo "[+] Searching for SQLite databases..."
@@ -77,9 +68,7 @@ if [[ "$DB_TYPE" == "sqlite" ]]; then
   fi
 fi
 
-### =========================
 ### SUMMARY
-### =========================
 echo "======================================"
 echo "[+] Backup complete"
 echo "[+] Stored in: $DEST"

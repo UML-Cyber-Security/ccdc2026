@@ -1,32 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### =========================
 ### GLOBAL CONFIG
-### =========================
 REMOTE_USER="youruser"
 REMOTE_HOST="your.server.ip"
 SSH_PORT=22
 
 BASE_BACKUP_DIR="$HOME/db-backups"
 
-### =========================
 ### DB CONFIG
-### =========================
 # Choose one:
 #   mysql | postgres | sqlite
 DB_TYPE="mysql"
 DB_NAME="all"   # or specific DB name
 
-### =========================
 ### MACHINE NAME
-### =========================
 HOSTNAME_REMOTE=$(ssh -p "$SSH_PORT" "$REMOTE_USER@$REMOTE_HOST" "hostname" 2>/dev/null || echo "$REMOTE_HOST")
 HOST_DIR=$(echo "$HOSTNAME_REMOTE" | tr '/ ' '__')
 
-### =========================
 ### OUTPUT SETUP
-### =========================
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 
 DEST="$BASE_BACKUP_DIR/$HOST_DIR/$DB_TYPE/$TIMESTAMP"
@@ -38,9 +30,7 @@ echo "[+] Host    : $HOST_DIR"
 echo "[+] DB Type : $DB_TYPE"
 echo "[+] Target  : $DEST"
 
-### =========================
 ### MYSQL / MARIADB
-### =========================
 if [[ "$DB_TYPE" == "mysql" ]]; then
 
   echo "[+] Running MySQL dump..."
@@ -53,9 +43,7 @@ if [[ "$DB_TYPE" == "mysql" ]]; then
 
 fi
 
-### =========================
 ### POSTGRESQL
-### =========================
 if [[ "$DB_TYPE" == "postgres" ]]; then
 
   echo "[+] Running PostgreSQL dump..."
@@ -68,9 +56,7 @@ if [[ "$DB_TYPE" == "postgres" ]]; then
 
 fi
 
-### =========================
 ### SQLITE (FILE-BASED)
-### =========================
 if [[ "$DB_TYPE" == "sqlite" ]]; then
 
   echo "[+] Searching for SQLite DBs..."
@@ -92,9 +78,7 @@ if [[ "$DB_TYPE" == "sqlite" ]]; then
       done
 fi
 
-### =========================
 ### UPDATE LATEST POINTER
-### =========================
 rm -f "$LATEST_LINK"
 ln -s "$TIMESTAMP" "$LATEST_LINK"
 

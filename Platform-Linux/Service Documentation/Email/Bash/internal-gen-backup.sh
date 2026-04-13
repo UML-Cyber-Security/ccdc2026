@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### =========================
 ### CONFIG
-### =========================
 LOCAL_HOSTNAME=$(hostname)
 BACKUP_BASE="$HOME/service-backups"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
@@ -14,19 +12,15 @@ mkdir -p "$DEST"
 
 echo "[+] Backup destination: $DEST"
 
-### =========================
 ### SERVICE DEFINITIONS (EDIT HERE)
 ### Format:
 ###   ["service_name"]="/path/to/config"
-### =========================
 declare -A SERVICES=(
   ["nginx"]="/etc/nginx"
   ["apache2"]="/etc/apache2"
 )
 
-### =========================
 ### DETECT + BACKUP (GENERIC)
-### =========================
 FOUND=0
 
 for SERVICE in "${!SERVICES[@]}"; do
@@ -48,15 +42,11 @@ for SERVICE in "${!SERVICES[@]}"; do
   fi
 done
 
-### =========================
 ### UPDATE LATEST POINTER
-### =========================
 rm -f "$LATEST_LINK"
 ln -s "$TIMESTAMP" "$LATEST_LINK"
 
-### =========================
 ### RESULT SUMMARY
-### =========================
 echo "======================================"
 echo ""
 echo "SUMMARY"

@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### =========================
 ### CONFIG
-### =========================
 LOCAL_HOSTNAME=$(hostname)
 BACKUP_BASE="$HOME/webserver-backups"
 
@@ -15,9 +13,7 @@ mkdir -p "$DEST"
 
 echo "[+] Backup destination: $DEST"
 
-### =========================
 ### WEB SERVER CONFIG PATHS
-### =========================
 declare -A SERVICES=(
   ["nginx"]="/etc/nginx"
   ["apache2"]="/etc/apache2"
@@ -25,9 +21,7 @@ declare -A SERVICES=(
   ["lighttpd"]="/etc/lighttpd"
 )
 
-### =========================
 ### DETECT AND BACKUP
-### =========================
 FOUND=0
 
 for SERVICE in "${!SERVICES[@]}"; do
@@ -47,15 +41,11 @@ for SERVICE in "${!SERVICES[@]}"; do
   fi
 done
 
-### =========================
 ### UPDATE LATEST POINTER
-### =========================
 rm -f "$LATEST_LINK"
 ln -s "$TIMESTAMP" "$LATEST_LINK"
 
-### =========================
 ### RESULT SUMMARY
-### =========================
 echo "======================================"
 echo " "
 echo "SUMMARY"
