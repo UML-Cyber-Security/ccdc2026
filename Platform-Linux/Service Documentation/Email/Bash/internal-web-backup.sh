@@ -6,8 +6,10 @@ set -euo pipefail
 ### =========================
 LOCAL_HOSTNAME=$(hostname)
 BACKUP_BASE="$HOME/webserver-backups"
+
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 DEST="$BACKUP_BASE/$TIMESTAMP"
+LATEST_LINK="$BACKUP_BASE/latest"
 
 mkdir -p "$DEST"
 
@@ -46,6 +48,12 @@ for SERVICE in "${!SERVICES[@]}"; do
 done
 
 ### =========================
+### UPDATE LATEST POINTER
+### =========================
+rm -f "$LATEST_LINK"
+ln -s "$TIMESTAMP" "$LATEST_LINK"
+
+### =========================
 ### RESULT SUMMARY
 ### =========================
 echo "======================================"
@@ -61,3 +69,4 @@ else
 fi
 
 echo "[✓] Stored in: $DEST"
+echo "[✓] Latest -> $LATEST_LINK"

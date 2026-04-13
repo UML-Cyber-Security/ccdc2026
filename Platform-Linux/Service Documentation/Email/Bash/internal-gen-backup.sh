@@ -8,6 +8,7 @@ LOCAL_HOSTNAME=$(hostname)
 BACKUP_BASE="$HOME/service-backups"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 DEST="$BACKUP_BASE/$TIMESTAMP"
+LATEST_LINK="$BACKUP_BASE/latest"
 
 mkdir -p "$DEST"
 
@@ -48,6 +49,12 @@ for SERVICE in "${!SERVICES[@]}"; do
 done
 
 ### =========================
+### UPDATE LATEST POINTER
+### =========================
+rm -f "$LATEST_LINK"
+ln -s "$TIMESTAMP" "$LATEST_LINK"
+
+### =========================
 ### RESULT SUMMARY
 ### =========================
 echo "======================================"
@@ -63,3 +70,5 @@ if [ "$FOUND" -eq 0 ]; then
 else
   echo "[✓] Backup complete."
 fi
+
+echo "[✓] Latest -> $LATEST_LINK"
