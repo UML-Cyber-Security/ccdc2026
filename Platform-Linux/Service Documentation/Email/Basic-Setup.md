@@ -1,15 +1,11 @@
 # Postfix and Dovecot Install + Config + Thunderbird Setup
 
 WHAT THIS IS:  
-Extra extra 
-
-PRE-REQ:
-- xxx
-- xxx
+Configuring TLS setup for a Postfix + Dovecot email enviornment. Setup on a Linux Debian machine. 
 
 
 ## 1. Install Postfix and Dovecot
-This part can be followed by the official docs.
+This part can be followed by the official docs. 
 
 
 ## 2. Secure the Services
