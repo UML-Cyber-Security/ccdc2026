@@ -8,6 +8,7 @@ param(
     [switch]$CredProtection,   # WDigest, anonymous restriction
     [switch]$NetworkHardening, # LLMNR, NBT-NS, WPAD, NLA for RDP
     [switch]$SkipReset,        # Run -All but skip GPO reset
+    [switch]$NoLSAProtection,  # Skip RunAsPPL (use if you have unsigned SSPs / smart-card middleware)
     [Alias("S")]
     [switch]$Safe,             # Safe mode: skips settings that could break services
     [Alias("SS")]
@@ -554,6 +555,17 @@ if ($runCredProtection) {
         -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
         -ValueName "RestrictRemoteSAM" -Value "O:BAG:BAD:(A;;RC;;;BA)" -Type String | Out-Null
     Write-Setting "HKLM\System\CurrentControlSet\Control\Lsa\RestrictRemoteSAM = O:BAG:BAD:(A;;RC;;;BA)"
+
+    # LSA Protection (RunAsPPL) — LSASS as PPL, blocks userland LSASS dumps
+    # Requires reboot. Server 2012 R2+ / Win 8.1+. Skip with -NoLSAProtection.
+    if (-not $NoLSAProtection) {
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+            -ValueName "RunAsPPL" -Value 1
+        Write-Warn "RunAsPPL enabled — requires reboot to take effect"
+    } else {
+        Write-Warn "Skipped RunAsPPL (NoLSAProtection)"
+    }
 
     $summary += "Credential Protection"
 }
