@@ -1,12 +1,30 @@
-- name: Register Microsoft repo for Debian family
-  ansible.builtin.shell: |
-    wget -q https://packages.microsoft.com/config/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_version'] }}/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb
-    dpkg -i /tmp/packages-microsoft-prod.deb
+- name: Download Microsoft repo for Debian/Ubuntu
+  ansible.builtin.get_url:
+    url: https://packages.microsoft.com/config/{{ ansible_facts['distribution'] | lower }}/{{ ansible_facts['distribution_version'] if ansible_facts['distribution'] == 'Ubuntu' else ansible_facts['distribution_major_version'] }}/packages-microsoft-prod.deb
+    dest: /tmp/packages-microsoft-prod.deb
   when: ansible_facts['os_family'] == "Debian"
 
-- name: Register Microsoft repo for RedHat family
-  ansible.builtin.shell: |
-    rpm -Uvh https://packages.microsoft.com/config/{{ 'fedora' if ansible_facts['distribution'] == 'Fedora' else 'rhel' }}/$(. /etc/os-release && echo ${VERSION_ID%%.*})/packages-microsoft-prod.rpm
+- name: Install Microsoft repo package for Debian/Ubuntu
+  ansible.builtin.apt:
+    deb: /tmp/packages-microsoft-prod.deb
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Download Microsoft repo package (RHEL/Fedora)
+  ansible.builtin.get_url:
+    url: https://packages.microsoft.com/config/{{ 'fedora' if ansible_facts['distribution'] == 'Fedora' else 'rhel' }}/{{ ansible_facts['distribution_major_version'] }}/packages-microsoft-prod.rpm
+    dest: /tmp/packages-microsoft-prod.rpm
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Import Microsoft GPG key
+  ansible.builtin.rpm_key:
+    key: https://packages.microsoft.com/keys/microsoft.asc
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Install Microsoft repo package (RHEL/Fedora)
+  ansible.builtin.package:
+    name: /tmp/packages-microsoft-prod.rpm
+    state: present
   when: ansible_facts['os_family'] == "RedHat"
 
 - name: Install Sysmon for Debian
@@ -35,7 +53,6 @@
     content: |
       <Sysmon schemaversion="4.70">
         <EventFiltering>
-          <!-- Log all process creation (Event ID 1) -->
           <RuleGroup name="" groupRelation="or">
             <ProcessCreate onmatch="include">
               <Rule groupRelation="or">
@@ -43,8 +60,7 @@
               </Rule>
             </ProcessCreate>
           </RuleGroup>
-          
-          <!-- Log all network connections (Event ID 3) -->
+
           <RuleGroup name="" groupRelation="or">
             <NetworkConnect onmatch="include">
               <Rule groupRelation="or">
