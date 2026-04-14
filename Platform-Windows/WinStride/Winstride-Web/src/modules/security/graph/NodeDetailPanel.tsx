@@ -1,0 +1,262 @@
+import { memo, useMemo } from 'react';
+import type { SelectedElement } from '../../../shared/graph';
+import { FAILURE_STATUS_LABELS } from '../shared/eventMeta';
+import { type DetectionMap, maxSeverity, SEVERITY_COLORS, SEVERITY_LABELS } from '../../../shared/detection/engine';
+import type { Detection } from '../../../shared/detection/rules';
+import { Row, SectionLabel, Badge } from '../../../components/list/DetailPrimitives';
+
+const TYPE_COLORS: Record<string, string> = {
+  user: '#58a6ff',
+  privileged: '#f97583',
+  machine: '#3fb950',
+  group: '#a78bfa',
+};
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  const mo = d.getMonth() + 1;
+  const day = d.getDate();
+  let h = d.getHours();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  const min = d.getMinutes().toString().padStart(2, '0');
+  return `${mo}/${day} ${h}:${min}\u00A0${ampm}`;
+}
+
+
+function formatProcessName(path: string): string {
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || path;
+}
+
+function getFailureReason(status: string, subStatus: string): string | null {
+  const sub = FAILURE_STATUS_LABELS[subStatus?.toLowerCase()];
+  if (sub) return sub;
+  const main = FAILURE_STATUS_LABELS[status?.toLowerCase()];
+  if (main) return main;
+  return null;
+}
+
+function DetectionsSummary({ detections }: { detections: Detection[] }) {
+  if (detections.length === 0) return null;
+  const sev = maxSeverity(detections);
+  if (!sev) return null;
+  return (
+    <>
+      <SectionLabel>Detections</SectionLabel>
+      <div className="space-y-1 py-1">
+        {detections.map((d) => {
+          const c = SEVERITY_COLORS[d.severity];
+          return (
+            <div key={d.ruleId} className="flex items-center gap-2">
+              <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${c.text} ${c.bg}`}>
+                {SEVERITY_LABELS[d.severity]}
+              </span>
+              <span className="text-[11px] text-gray-200 truncate">{d.ruleName}</span>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+const NodePanel = memo(function NodePanel({ data, detections }: { data: Record<string, unknown>; detections?: DetectionMap }) {
+  const nodeType = data.type as string;
+  const privileged = data.privileged as boolean;
+  const colorKey = nodeType === 'group' ? 'group' : nodeType === 'machine' ? 'machine' : privileged ? 'privileged' : 'user';
+  const color = TYPE_COLORS[colorKey];
+  const typeLabel = nodeType === 'group' ? 'Group' : nodeType === 'machine' ? 'Machine' : privileged ? 'Privileged User' : 'User';
+
+  const logonCount = data.logonCount as number;
+  const failedCount = data.failedCount as number;
+  const successCount = data.successCount as number;
+  const connectedCount = data.connectedCount as number;
+  const authPackages = data.authPackages as string[];
+  const hadAdminSession = data.hadAdminSession as boolean;
+  const lastIp = data.lastIp as string;
+  const lastSeen = data.lastSeen as string;
+
+  const nodeDetections = useMemo(
+    () => resolveEdgeDetections(data.eventIds, detections),
+    [data.eventIds, detections],
+  );
+
+  const isUser = nodeType === 'user';
+  const connectedLabel = nodeType === 'group' ? 'Members' : isUser ? 'Machines' : 'Users';
+
+  return (
+    <div className="absolute top-3 right-3 w-68 bg-[#0d1117]/95 border border-[#21262d] rounded-lg backdrop-blur-md shadow-2xl overflow-hidden max-h-[calc(100%-24px)] overflow-y-auto">
+      <div className="h-0.5" style={{ background: color }} />
+      <div className="p-3.5">
+        <div className="flex items-center gap-2 mb-3">
+          <div
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ background: color, boxShadow: `0 0 8px ${color}80` }}
+          />
+          <h3 className="text-[13px] font-semibold text-gray-100 truncate">
+            {data.label as string}
+          </h3>
+          {hadAdminSession && <Badge color="#f97583">ADMIN</Badge>}
+        </div>
+        <Row label="Type" value={typeLabel} />
+        <Row label={connectedLabel} value={connectedCount} />
+
+        {/* Activity breakdown */}
+        <SectionLabel>Activity</SectionLabel>
+        <Row label="Total events" value={logonCount} />
+        {successCount > 0 && <Row label="Successful" value={successCount} />}
+        {failedCount > 0 && (
+          <Row label="Failed" value={
+            <span className="text-[#f85149]">{failedCount}</span>
+          } />
+        )}
+        {lastSeen && <Row label="Last seen" value={formatTime(lastSeen)} />}
+
+        {/* Network (user nodes only) */}
+        {isUser && lastIp && lastIp !== '-' && (
+          <>
+            <SectionLabel>Network</SectionLabel>
+            <Row label="Last IP" value={lastIp} mono />
+          </>
+        )}
+
+        {/* Authentication methods */}
+        {authPackages.length > 0 && (
+          <>
+            <SectionLabel>Auth methods</SectionLabel>
+            <div className="flex flex-wrap gap-1 py-1.5">
+              {authPackages.map((pkg) => (
+                <span key={pkg} className="text-[10px] px-1.5 py-0.5 rounded bg-[#21262d] text-gray-400 font-mono">
+                  {pkg}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Detections */}
+        <DetectionsSummary detections={nodeDetections} />
+      </div>
+    </div>
+  );
+});
+
+function resolveEdgeDetections(eventIds: unknown, detections?: DetectionMap): Detection[] {
+  if (!detections || !Array.isArray(eventIds)) return [];
+  const seen = new Set<string>();
+  const result: Detection[] = [];
+  for (const eid of eventIds as number[]) {
+    for (const d of detections.byEventId.get(eid) ?? []) {
+      if (!seen.has(d.ruleId)) { seen.add(d.ruleId); result.push(d); }
+    }
+  }
+  return result;
+}
+
+const EdgePanel = memo(function EdgePanel({ data, detections }: { data: Record<string, unknown>; detections?: DetectionMap }) {
+  const firstSeen = data.firstSeen as string;
+  const lastSeen = data.lastSeen as string;
+  const logonTypeLabel = data.logonTypeLabel as string;
+  const ipAddress = data.ipAddress as string;
+  const ipPort = data.ipPort as string;
+  const subjectUserName = data.subjectUserName as string;
+  const subjectDomainName = data.subjectDomainName as string;
+  const targetDomainName = data.targetDomainName as string;
+  const authPackage = data.authPackage as string;
+  const logonProcess = data.logonProcess as string;
+  const workstationName = data.workstationName as string;
+  const processName = data.processName as string;
+  const keyLength = data.keyLength as number;
+  const elevatedToken = data.elevatedToken as boolean;
+  const failureStatus = data.failureStatus as string;
+  const failureSubStatus = data.failureSubStatus as string;
+
+  const isMembership = data.edgeType === 'membership';
+  const failureReason = getFailureReason(failureStatus, failureSubStatus);
+  const hasAuthDetails = !isMembership && (authPackage || logonProcess || processName || workstationName);
+  const hasNetworkDetails = !isMembership && ((ipAddress && ipAddress !== '-') || ipPort);
+  const isFailedLogon = !isMembership && !!failureStatus && failureStatus !== '0x0';
+
+  const initiator = subjectDomainName && subjectDomainName !== '-'
+    ? `${subjectDomainName}\\${subjectUserName}`
+    : subjectUserName;
+
+  const edgeDetections = useMemo(
+    () => resolveEdgeDetections(data.eventIds, detections),
+    [data.eventIds, detections],
+  );
+
+  return (
+    <div className="absolute top-3 right-3 w-72 bg-[#0d1117]/95 border border-[#21262d] rounded-lg backdrop-blur-md shadow-2xl overflow-hidden max-h-[calc(100%-24px)] overflow-y-auto">
+      <div className={`h-0.5 ${isMembership ? 'bg-[#8b5cf6]' : isFailedLogon ? 'bg-[#f85149]' : 'bg-[#e3b341]'}`} />
+      <div className="p-3.5">
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-[13px] font-semibold text-gray-100 truncate">{logonTypeLabel}</h3>
+          <Badge color={isFailedLogon ? '#f85149' : '#e3b341'}>{data.eventId as number}</Badge>
+          {elevatedToken && <Badge color="#f97583">ADMIN</Badge>}
+        </div>
+
+        {/* Failure reason */}
+        {isFailedLogon && failureReason && (
+          <div className="mb-2.5 px-2 py-1.5 rounded bg-[#f85149]/10 border border-[#f85149]/20">
+            <span className="text-[11px] text-[#f85149] font-medium">{failureReason}</span>
+          </div>
+        )}
+        {isFailedLogon && !failureReason && failureSubStatus && (
+          <Row label="Status" value={failureSubStatus} />
+        )}
+
+        {/* Identity */}
+        <Row label={isMembership ? 'Member' : 'User'} value={(data.source as string).replace(/^user:/, '')} />
+        <Row label={isMembership ? 'Group' : 'Machine'} value={(data.target as string).replace(/^(machine|group):/, '')} />
+        {targetDomainName && <Row label="Domain" value={targetDomainName} />}
+        {initiator && initiator !== '-' && (
+          <Row label="Initiated by" value={initiator} />
+        )}
+
+        {/* Network */}
+        {hasNetworkDetails && (
+          <>
+            <SectionLabel>Network</SectionLabel>
+            {ipAddress && ipAddress !== '-' && (
+              <Row label="IP Address" value={ipPort ? `${ipAddress}:${ipPort}` : ipAddress} mono />
+            )}
+            {workstationName && workstationName !== '-' && (
+              <Row label="Source host" value={workstationName} />
+            )}
+          </>
+        )}
+
+        {/* Authentication */}
+        {hasAuthDetails && (
+          <>
+            <SectionLabel>Authentication</SectionLabel>
+            {authPackage && <Row label="Auth" value={authPackage} />}
+            {logonProcess && <Row label="Logon process" value={logonProcess} />}
+            {processName && processName !== '-' && (
+              <Row label="Process" value={formatProcessName(processName)} mono />
+            )}
+            {keyLength >= 0 && <Row label="Key length" value={`${keyLength}-bit`} />}
+          </>
+        )}
+
+        {/* Activity */}
+        <SectionLabel>Activity</SectionLabel>
+        <Row label="Events" value={data.logonCount as number} />
+        {firstSeen && <Row label="First seen" value={formatTime(firstSeen)} />}
+        {lastSeen && <Row label="Last seen" value={formatTime(lastSeen)} />}
+
+        {/* Detections (scoped to this edge's events) */}
+        <DetectionsSummary detections={edgeDetections} />
+      </div>
+    </div>
+  );
+});
+
+export default memo(function NodeDetailPanel({ selected, detections }: { selected: SelectedElement; detections?: DetectionMap }) {
+  const { type, data } = selected;
+
+  if (type === 'node') return <NodePanel data={data} detections={detections} />;
+  return <EdgePanel data={data} detections={detections} />;
+});
