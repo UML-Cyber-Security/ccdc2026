@@ -1,5 +1,0 @@
----
-- name: Restart sshguard service
-  ansible.builtin.service:
-    name: sshguard
-    state: restarted

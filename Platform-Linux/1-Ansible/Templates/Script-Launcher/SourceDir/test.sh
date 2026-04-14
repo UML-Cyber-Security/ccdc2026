@@ -1,1 +1,0 @@
-touch /home/blueteam/hello.txt

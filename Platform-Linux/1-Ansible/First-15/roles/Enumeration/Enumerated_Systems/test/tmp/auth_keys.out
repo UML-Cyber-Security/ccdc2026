@@ -1,8 +1,0 @@
-[!] AUTHORIZED KEY FILES [!]
-#AuthorizedKeysFile	.ssh/authorized_keys .ssh/authorized_keys2
-
-[!] USER AUTHORIZED KEYS [!]
-ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBMZkNIE7cQaIRX75pLcAN7Et8Umz+B/PqNlKcz2eEfgra13i8V3yoR35JwFHpluIGxAtbVrB8lz/R1MMXlGEXrqmZ0VuauleGa5YQvbbi3MutWzxgHb2QkwOxcqfbGM/yA== Cyber-Range Key
-
-
-[!] ROOT AUTHORIZED KEYS [!]

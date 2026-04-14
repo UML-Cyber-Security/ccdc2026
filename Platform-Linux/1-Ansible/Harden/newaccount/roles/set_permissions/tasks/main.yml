@@ -1,7 +1,0 @@
----
-- name: Set restrictive permissions for accounts
-  ansible.builtin.file:
-    path: "/home/{{ item }}"
-    mode: 'go-rwx'
-    recurse: yes
-  loop: "{{ new_accounts }}"

@@ -1,8 +1,0 @@
----
-- hosts: all
-
-  roles:
-  - gen_passwords
-  - create_accounts
-  - upload_key
-  - set_permissions
