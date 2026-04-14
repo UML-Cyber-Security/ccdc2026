@@ -120,4 +120,23 @@ remove-ldap.sh
 Script removes the ldap service from the Linux machine.
 RISK: Low - Script only uninstalls the ldap service, which could pose a risk if the service is needed on the machine for the infrastructure to function correctly. 
 
+install.sh:
+Script installs Docker, deploys the Nexterm container with a hardcoded encryption key, and registers an initial user account. The hardcoded `ENCRYPTION_KEY` in the docker run command is a notable security concern, as it is shared across all deployments using this script.
+RISK: Medium — Docker installation and container deployment are generally safe, but the static encryption key means any attacker with access to the script or container data volume could decrypt stored credentials.
+
+connect-ssh-interactive.sh:
+Script interactively prompts the user to register SSH server entries and optionally store credentials (username/password) in the Nexterm instance via its API.
+RISK: Low-Medium — The script itself is safe, but storing plaintext SSH credentials in Nexterm introduces risk if the Nexterm instance is compromised or improperly secured.
+
+connect-ssh-file.sh:
+Script bulk-imports SSH server entries into Nexterm by parsing a structured text file, optionally creating stored credential identities for each entry.
+RISK: Low-Medium — Same credential storage risk as the interactive SSH script. Additionally, the input file may contain plaintext passwords, which poses a risk if the file is not properly secured or is left on disk after use.
+
+connect-rdp-interactive.sh:
+Script interactively prompts the user to register RDP server entries and optionally store credentials in the Nexterm instance via its API.
+RISK: Low-Medium — Same concerns as the interactive SSH script. RDP credentials stored in Nexterm could be leveraged for lateral movement if the Nexterm instance is compromised.
+
+onnect-rdp-file.sh: 
+Script bulk-imports RDP server entries into Nexterm by parsing a structured text file, optionally creating stored credential identities for each entry.
+RISK: Low-Medium — Same concerns as the file-based SSH script. Plaintext RDP credentials in the input file and Nexterm credential storage both represent a risk if access controls are not properly enforced.
 
