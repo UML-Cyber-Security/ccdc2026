@@ -1,6 +1,8 @@
 # Scripts
 This directory contains various bash scripts to configure our Linux systems and verify various aspects of them. The should be run in a specific order to prevent the system logs from being flooded, though most of these can be ran in any order. They are listed in the order they are meant to run and are prepended with a number. The [Extras](#extras) section contains notes on additional scripts.
 
+Within this directory there also exists a RISK.md file that outlines the risk associated with a script/tool.
+
 > [!NOTE]
 > If you get to the point of blocking things with IPTables, we can use options similar to the following ones. 
 > ```

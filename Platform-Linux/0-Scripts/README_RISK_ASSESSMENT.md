@@ -1,42 +1,42 @@
 This will outline the operations and risks of all scripts in this directory and its sub-directories.
 
-Cron-Helper folder:
+Cron-Helper folder (cron-auth-user.sh & cron-setup-schedule.sh):
 2 scripts that grant a user permissions to schedule  cron jobs and create a new user cronjob.
 RISK: Low - There is no inherit risk with this script, unless a user adds a malicous crontjob to the machine.
 
-Docker-Helper folder:
+Docker-Helper folder (docker-install.sh, firewall-docker.sh, inspect-all-containers.sh, install-editors.sh, post-install-scripts.sh, shell.sh):
 Scripts in this folder install docker, add basic docker iptables rules, and allow for easier management of the docker service.
 RISK: Low-Medium - None of scripts here pose any risk to the enviornemnt except for the firewall-docker.sh script which poses a medium risk. Since this script adds firewall rules to the system, there is a possibility for a service to break, although this can be easily reverted.
 
-EasyRSA_CA:
+EasyRSA_CA (create-certificate.sh & setup-ca-server.sh):
 Scripts here create a CA and .pem files. 
 RISK: Low - These risk don't pose any risk to the environment.
 
-File:
+File (suid.sh):
 The script here scans the filesystem for any SUID binaries and allows for modification of any files found. 
 RISK: Medium-High - The script allows for very easy modification of root owned files and binaries, which could break system operation and used improperlyl by the user. 
 
-Firewall_Isolation:
+Firewall_Isolation (clean-isolation.sh & isolation.sh):
 The scripts here setup and remove firewall "isolation" rules, essentially blocking out all traffic except for traffic used to access the machine. 
 RISK: Medium-High - Even though these scripts are thouroughly tested, there is always a chance of locking out a user from the machine, or breaking some important system service that requires network traffic to funciton correctly. 
 
-Gluster_Backup:
+Gluster_Backup (cron-setup.sh, gluster-backup-inf.sh, gluster-backup.sh, multi-gluster-backup-inf.sh, multi-gluster-backup.sh):
 These scripts implement a rotating backup system for Gluster "brick" directories suing "tar". 
 RISK: Low-Medium - There is no inherit risk for any of these scripts, except for potential overfilling of system disk storage. 
 
-Gluster_Setup:
+Gluster_Setup (gluster-firewall.sh, gluster-install.sh, gluster-security.sh):
 These scripts install and configure the GlusterFS cluster node, and allow for the implemenation of iptables rules compatable with the Gluster service.
 RISK: Medium-High - Even though properly tested, iptables configuration has a chance of locking out users or breaking services. The service deployment itself does not pose any risk. 
 
-Healthchecks:
+Healthchecks (echo-coreservice.sh, log-coreservice.sh, setup-schedule.sh):
 These scripts implement a very basic system hardening health-check framework, verifying that any critical services are running, , logging anomalies using "logger", validating auditd rule count and systeem kernel parameters using a cronjob. 
 RISK: Low - These scripts install very basic services and should not pose any threat to the envioronment. 
 
-IPTables-Helper:
+IPTables-Helper (add-both.sh, filter_table_policies.sh, firewall-docker.sh, firewall-reset.sh, graylog.sh, k8s-basics.sh, list-table.sh, loop-port.sh, port-traffic.sh, ssh-non-standard-port.sh, trusted-ips.sh, wazuh.sh):
 This collection of scripts implements a full firewall management toolkit for the Linux machines using iptables. This includes scripts that set default DROP/ACCEPT policies, add docker firewall chain rules, firewall flush and reset, IP whitelist generation, a wrapper script to help set custom rules, and SSH hardening by changing the default listening port. 
 RISK: High - Although properly tested, these scripts have a chance of locking out remote user access or breaking service functionality. Unless a full lock out occurs, any changes made by these scripts can be easily reverted. 
 
-Passwd-Policy:
+Passwd-Policy (passwd-ppol.sh):
 This script sets a basic, common sense password policy on local Linux systems through PAM.
 RISK: Medium-High - This script modifies the Linux PAM authentication files which could potentially break system wide authentication. 
 
