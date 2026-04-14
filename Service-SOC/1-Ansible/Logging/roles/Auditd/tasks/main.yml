@@ -1,0 +1,45 @@
+- name: Install Auditd on Debian/Ubuntu
+  ansible.builtin.apt:
+    name:
+      - auditd
+      - audispd-plugins
+    state: present
+    update_cache: yes
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install Auditd on RHEL/CentOS/Fedora
+  ansible.builtin.package:
+    name:
+      - audit
+      - "{{ 'audit-libs' if ansible_facts['distribution'] != 'Fedora' else omit }}"
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Enable and start auditd service
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: started
+
+- name: Create audit rules file
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/ccdc.rules
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -k sudo_log
+      -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=4294967295 -k perm_mod
+      -a always,exit -F arch=b64 -S open,openat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+      -w /etc/passwd -p wa -k user_passwd
+      -w /etc/shadow -p wa -k user_shadow
+      -w /etc/sudoers -p wa -k scope
+      -a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+      -a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=4294967295 -k delete
+      -w /var/log/lastlog -p wa -k logins
+      -w /bin/su -p x -k priv_esc
+
+- name: Restart auditd service
+  ansible.builtin.service:
+    name: auditd
+    state: restarted

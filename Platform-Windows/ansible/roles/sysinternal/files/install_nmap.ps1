@@ -1,3 +1,4 @@
+$ProgressPreference = 'SilentlyContinue'
 # Download Nmap installer
 $installerUrl = "https://nmap.org/dist/nmap-7.94-setup.exe"
 $installerPath = "nmap-7.94-setup.exe"

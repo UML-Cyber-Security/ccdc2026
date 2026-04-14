@@ -1,0 +1,45 @@
+You are an expert DevOps engineer. Generate a clean Ansible inventory file (inventory.ini).
+
+Context:
+
+* SSH connectivity is handled through my ~/.ssh/config file.
+* The hostnames I provide correspond exactly to the SSH aliases defined there.
+* Ansible should connect using those aliases directly (do NOT include IP addresses).
+
+My ansible.cfg already contains:
+
+[defaults]
+host_key_checking = False
+private_key_file = ~/.ssh/ccdc
+inventory = ./inventory.ini
+
+Requirements for the inventory file:
+
+1. Use INI-style Ansible inventory format.
+2. Create two primary host groups:
+
+   * debian
+   * rhel
+3. Every host I provide must be placed into one of those groups.
+4. Create a parent group called "linux" that contains BOTH the debian and rhel groups.
+5. Add a [linux] section containing:
+   ansible_user=<default_user>
+   ansible_connection=ssh
+   ansible_become_method=sudo
+   ansible_become=yes
+6. Add a [rhel] section containing:
+   ansible_python_interpreter=/usr/bin/python3.11
+7. Do NOT repeat hosts in multiple groups unless explicitly specified.
+8. Use the SSH alias names exactly as provided.
+9. Maintain clean formatting and logical grouping.
+10. Do NOT include explanations, comments, or markdown. Output ONLY the inventory file.
+
+Input information:
+
+DEFAULT USER:
+bt8
+
+HOSTS:
+{{INPUT_HOSTS_HERE}}
+
+Generate the inventory.ini file now.
