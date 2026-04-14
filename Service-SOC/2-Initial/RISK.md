@@ -49,3 +49,24 @@ Functionality/Description: The script creates user accounts with ssh access and 
 Use Case During Event: When the team members need their own user accounts on a system so actions can easibly be attributed to them.
 
 Risk Assessment: Medium - the script creates user accounts with full sudo access, which could be a risk if the accounts are not properly secured or if the keys are compromised.
+
+### enum_users.sh
+Functionality/Description: Enumerates all interactive user accounts on the system (UID >= 1000) plus root, writes them to users.txt with a numbered list. Overwrites the file on each run.
+
+Use Case During Event: Run at the start of a round to get a clear picture of all user accounts on a machine before hardening.
+
+Risk Assessment: Low - read-only operation, no passwords involved, no system changes made.
+
+### change_passwords.
+Functionality/Description: Prompts for a master hash, then derives a unique password for every interactive user and root using SHA-256 with the master hash and username as a seed. Skips blackteam accounts. Uses pw on FreeBSD and chpasswd on Linux distros.
+
+Use Case During Event: Run immediately after enumeration to lock down all accounts and kick red team out of any pre-planted credentials.
+
+Risk Assessment: Medium - changing passwords on service accounts could break services. Script mitigates this by filtering UID < 1000 and nologin/false shells, but verify before running on production services.
+
+### recover_password.
+Functionality/Description: Prompts for the master hash and a username, derives and displays that user's plaintext password.
+
+Use Case During Event: Use mid-round when you need to recover a specific user's password without rerunning the full change script.
+
+Risk Assessment: Low - derived password briefly appears in plaintext on the terminal, so be mindful of who has visibility of your screen.
