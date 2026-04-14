@@ -1,51 +1,80 @@
-# WinStride Risk Assessment
+# WinStride
 
-Open-source Windows security monitoring and SIGMA detection platform (agent + API + web UI). Used as our blue team SIEM during the event.
+Open-source Windows security monitoring and SIGMA detection platform. Agent + API + web UI, 121 compiled SIGMA rules, SQLite backend.
 
-## Overview
+## WinStride-Agent/
+**Functionality:** Windows service (.NET 8) running as `LocalSystem`. Collects Security/Sysmon/PowerShell event logs, enumerates TCP connections and running processes, and ships telemetry to the API over HTTP or mTLS HTTPS.
 
-**Functionality:** Windows endpoint telemetry collection (Security events, Sysmon, PowerShell, network, processes, autoruns) with 121 compiled SIGMA rules evaluated in the browser. Agent runs as a Windows service on each monitored host and reports to a central API over HTTP or mTLS HTTPS. SQLite backend, React frontend.
+**Use Case During Event:** Installed on every defended Windows host to feed the SOC dashboard with live endpoint telemetry and SIGMA detections.
 
-**Use Case During Event:** Primary SOC visibility — live event stream, SIGMA detections, logon graph, process trees, cross-module correlation (PowerShell ↔ Sysmon, Network ↔ Sysmon). Run API on a dedicated box (DC or SOC host), install agent on every Windows host we defend.
+**Risk Assessment:** MEDIUM — Runs as `LocalSystem`. If `ServerAddress` is misconfigured or DNS is hijacked, all endpoint telemetry leaks to the attacker. Agent binary replacement on re-install means a compromised API host can push a trojaned agent to every endpoint.
 
-**Risk Assessment:** MEDIUM
+## WinStride-Api/
+**Functionality:** ASP.NET ingest API with SQLite backend. Accepts telemetry from agents on port 5090 (HTTP) or 7097 (HTTPS/mTLS). Stores events, autoruns, processes, and network connections in `winstride.db`.
 
-## Component Risk Breakdown
+**Use Case During Event:** Central collector running on a dedicated SOC host or DC. Aggregates all agent telemetry for the web UI to query.
 
-### `WinStride-Agent/` (Windows service, .NET 8)
-**Risk:** MEDIUM — Runs as `LocalSystem`. Reads Security/Sysmon/PowerShell event logs, enumerates TCP connections and processes, and ships them to the API. Requires agent → API network path open. If the agent's outbound destination is attacker-controlled (misconfigured `ServerAddress`), all endpoint telemetry leaks.
+**Risk Assessment:** HIGH — HTTP mode has no auth; HTTPS mode requires client cert (mTLS). Must be firewalled to the agent subnet only. Captures full PowerShell script-block content including any credentials surfaced by red-team activity — `winstride.db` is effectively a credential store until wiped.
 
-### `WinStride-Api/` (ASP.NET API, SQLite)
-**Risk:** MEDIUM — Accepts telemetry ingest on configured port (default 5090 HTTP / 7097 HTTPS). HTTP mode has no auth; HTTPS mode enforces client cert (mTLS). Must be firewalled to the agent subnet only. SQLite DB contains full PowerShell script-block content including any credentials captured from red-team activity — treat the DB file as sensitive.
+## Winstride-Web/
+**Functionality:** React SPA frontend. Compiles 121 SIGMA YAML rules client-side, queries the API for events, renders dashboards, logon graph, process trees, and cross-module correlation views.
 
-### `Winstride-Web/` (React frontend)
-**Risk:** LOW — Static SPA, no server-side exec. Loads events from API and compiles SIGMA YAML client-side. Browser accessing the web UI needs network path to the API.
+**Use Case During Event:** SOC operator UI for triaging detections and pivoting through endpoint activity.
 
-### `scripts/setup-winstride.ps1`
-**Risk:** LOW — Prerequisite check + repo validation. Installs .NET SDK and Node.js with `-Auto`. Requires admin. No system config changes beyond package install.
+**Risk Assessment:** LOW — Static SPA, no server-side execution. Browser needs network path to the API. Do not expose the hosting origin beyond the SOC subnet.
 
-### `scripts/setup-certs.ps1`
-**Risk:** LOW — Generates self-signed server + client certs for mTLS. Writes PFX files to disk. Protect the PFX passwords.
+## scripts/setup-winstride.ps1
+**Functionality:** Installs .NET SDK and Node.js prerequisites, validates repo layout for the service-based install flow.
 
-### `scripts/install-run-agent.ps1`
-**Risk:** MEDIUM — Publishes, installs, and starts the agent as a Windows service running as `LocalSystem`. Re-running replaces the existing service binary. Wrong `ServerAddress` value points the agent at a different host — verify before deploy.
+**Use Case During Event:** First-run bootstrap on a new API host before `setup-certs.ps1`.
 
-### `scripts/setup-agent.ps1`, `scripts/start-winstride.ps1`
-**Risk:** LOW — Wrapper scripts for agent config and launching API/web in dev mode.
+**Risk Assessment:** LOW — Admin required. Package install only, no system config changes. `-Auto` installs without prompting.
 
-### `scripts/ingest-evtx.ps1`
-**Risk:** LOW — Parses local EVTX files and posts events to the API. Read-only against logs.
+## scripts/setup-certs.ps1
+**Functionality:** Generates self-signed server and client certificates for mTLS, writes PFX files with user-supplied passwords.
 
-### `scripts/ensure-autoruns.ps1`
-**Risk:** LOW — Downloads Sysinternals `autorunsc.exe` if missing. Outbound fetch from `live.sysinternals.com`; skip on air-gapped hosts.
+**Use Case During Event:** One-time cert provisioning for the API and every agent before HTTPS rollout.
 
-### `deploy/docker-compose.yml`
-**Risk:** LOW — Legacy Postgres compose file. Not used in the current SQLite-based deployment. Safe to ignore.
+**Risk Assessment:** LOW — Self-signed only. PFX passwords are the only protection for the client certs; leaking a client PFX lets an attacker impersonate an agent.
 
-## Deployment Notes
+## scripts/install-run-agent.ps1
+**Functionality:** Publishes the agent project, writes the agent config, installs and starts the `WinStrideAgent` Windows service as `LocalSystem`. Supports HTTP and mTLS HTTPS modes.
 
-- **Always use HTTPS/mTLS mode in competition.** HTTP mode is dev-only and unauthenticated.
-- **Firewall the API port** to the monitored-host subnet. Web UI access from SOC workstation only.
-- **Back up `winstride.db`** periodically — it's the detection history.
-- Agent logs to Windows Event Log under source `WinStride-Agent`. Service name: `WinStrideAgent`.
-- Red team script-block content is stored verbatim in the DB. Don't ship the DB off-host without scrubbing.
+**Use Case During Event:** Primary tool for deploying the agent to every Windows endpoint.
+
+**Risk Assessment:** MEDIUM — Runs as `LocalSystem`. Re-running replaces the service binary without confirmation. Wrong `-ServerAddress` points the agent at a different host and silently leaks telemetry. PFX password is passed as a script parameter if not prompted.
+
+## scripts/setup-agent.ps1
+**Functionality:** Helper wrapper that configures the agent's `appsettings.json` (server address, port, cert paths) without installing the service.
+
+**Use Case During Event:** Reconfiguring an already-installed agent without reinstalling.
+
+**Risk Assessment:** LOW — Writes to agent config file only. No service changes.
+
+## scripts/start-winstride.ps1
+**Functionality:** Launches API and web in dev mode from source (no service install).
+
+**Use Case During Event:** Local testing or quick-start SOC deployment when a full service install isn't needed.
+
+**Risk Assessment:** LOW — Foreground dev-mode processes. Stops when the shell closes.
+
+## scripts/ingest-evtx.ps1
+**Functionality:** Parses local EVTX files and POSTs the events to the API.
+
+**Use Case During Event:** Backfilling historical logs from a host that wasn't yet running the agent.
+
+**Risk Assessment:** LOW — Read-only against EVTX files. Ingest load on the API proportional to file size.
+
+## scripts/ensure-autoruns.ps1
+**Functionality:** Checks for Sysinternals `autorunsc.exe` and downloads it from `live.sysinternals.com` if missing.
+
+**Use Case During Event:** Ensures the agent's autoruns module has its dependency before startup.
+
+**Risk Assessment:** LOW — Single outbound fetch from Microsoft. Skip on air-gapped hosts; pre-stage `autorunsc.exe` instead.
+
+## deploy/docker-compose.yml
+**Functionality:** Legacy Postgres compose file from the pre-SQLite era.
+
+**Use Case During Event:** None. Not used by the current SQLite-based deployment.
+
+**Risk Assessment:** LOW — Inert unless someone runs `docker compose up`. Left in tree for reference.
