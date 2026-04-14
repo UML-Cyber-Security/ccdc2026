@@ -1,6 +1,0 @@
----
-- name: Lock the required accounts
-  ansible.builtin.user:
-    name: "{{ item }}"
-    password_lock: true
-  loop: "{{ locked_accounts }}"

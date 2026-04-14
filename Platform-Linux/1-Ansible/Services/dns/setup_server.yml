@@ -1,6 +1,0 @@
----
-- hosts: dns-server
-
-  roles:
-    - docker_setup
-    - pihole_setup

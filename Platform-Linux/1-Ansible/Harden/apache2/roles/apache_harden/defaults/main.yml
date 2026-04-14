@@ -1,2 +1,0 @@
-apache_service: "{{ 'apache2' if ansible_os_family == 'Debian' else 'httpd' }}"
-apache_conf_dir: "{{ '/etc/apache2' if ansible_os_family == 'Debian' else '/etc/httpd' }}"

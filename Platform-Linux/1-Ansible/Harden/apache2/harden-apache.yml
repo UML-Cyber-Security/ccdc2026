@@ -1,5 +1,0 @@
-- name: Harden Apache on all web servers
-  hosts: web_servers
-  become: true
-  roles:
-    - apache_harden
