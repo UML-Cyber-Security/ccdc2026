@@ -1,0 +1,163 @@
+import type { WinEvent } from '../shared/types';
+import type { ColumnDef } from '../../../shared/listUtils';
+import { getDataArray, getDataField } from '../../../shared/eventParsing';
+import { EVENT_LABELS, LOGON_TYPE_LABELS } from '../shared/eventMeta';
+
+/* ------------------------------------------------------------------ */
+/*  Event data parsing                                                 */
+/* ------------------------------------------------------------------ */
+
+export interface ParsedEventData {
+  targetUserName: string;
+  targetDomainName: string;
+  subjectUserName: string;
+  subjectDomainName: string;
+  logonType: number;
+  logonTypeLabel: string;
+  ipAddress: string;
+  ipPort: string;
+  authPackage: string;
+  logonProcess: string;
+  workstationName: string;
+  processName: string;
+  keyLength: number;
+  elevatedToken: boolean;
+  failureStatus: string;
+  failureSubStatus: string;
+  raw: unknown;
+}
+
+const parseCache = new WeakMap<WinEvent, ParsedEventData | null>();
+
+export function parseEventData(event: WinEvent): ParsedEventData | null {
+  if (parseCache.has(event)) return parseCache.get(event)!;
+
+  const dataArray = getDataArray(event);
+  if (!dataArray) { parseCache.set(event, null); return null; }
+
+  const logonTypeStr = getDataField(dataArray, 'LogonType');
+  const logonType = logonTypeStr ? parseInt(logonTypeStr, 10) : -1;
+  const keyLengthStr = getDataField(dataArray, 'KeyLength');
+  const elevatedStr = getDataField(dataArray, 'ElevatedToken');
+
+  const result: ParsedEventData = {
+    targetUserName: getDataField(dataArray, 'TargetUserName'),
+    targetDomainName: getDataField(dataArray, 'TargetDomainName'),
+    subjectUserName: getDataField(dataArray, 'SubjectUserName'),
+    subjectDomainName: getDataField(dataArray, 'SubjectDomainName'),
+    logonType,
+    logonTypeLabel: LOGON_TYPE_LABELS[logonType] ?? (logonType >= 0 ? `Type ${logonType}` : ''),
+    ipAddress: getDataField(dataArray, 'IpAddress') || '-',
+    ipPort: getDataField(dataArray, 'IpPort') || '',
+    authPackage: getDataField(dataArray, 'AuthenticationPackageName'),
+    logonProcess: getDataField(dataArray, 'LogonProcessName'),
+    workstationName: getDataField(dataArray, 'WorkstationName'),
+    processName: getDataField(dataArray, 'ProcessName'),
+    keyLength: keyLengthStr ? parseInt(keyLengthStr, 10) : -1,
+    elevatedToken: elevatedStr === '%%1842' || event.eventId === 4672,
+    failureStatus: getDataField(dataArray, 'Status'),
+    failureSubStatus: getDataField(dataArray, 'SubStatus'),
+    raw: event.eventData,
+  };
+
+  parseCache.set(event, result);
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Column definitions                                                 */
+/* ------------------------------------------------------------------ */
+
+export const COLUMNS: ColumnDef<WinEvent>[] = [
+  {
+    key: 'severity',
+    label: 'Risk',
+    defaultVisible: true,
+    sortable: true,
+    flex: 0.7,
+    minWidth: 60,
+    getValue: (e) => e.id, // sorting uses the detection map externally
+    searchKeys: ['risk'],
+  },
+  {
+    key: 'eventId',
+    label: 'Event ID',
+    defaultVisible: true,
+    sortable: true,
+    flex: 2,
+    minWidth: 150,
+    getValue: (e) => e.eventId,
+    searchKeys: ['event', 'id'],
+  },
+  {
+    key: 'user',
+    label: 'User',
+    defaultVisible: true,
+    sortable: true,
+    flex: 2,
+    minWidth: 120,
+    getValue: (e) => parseEventData(e)?.targetUserName ?? '',
+    searchKeys: ['target'],
+  },
+  {
+    key: 'machine',
+    label: 'Machine',
+    defaultVisible: true,
+    sortable: true,
+    flex: 2,
+    minWidth: 120,
+    getValue: (e) => e.machineName,
+    searchKeys: ['host'],
+  },
+  {
+    key: 'logonType',
+    label: 'Logon Type',
+    defaultVisible: true,
+    sortable: true,
+    flex: 1.2,
+    minWidth: 100,
+    getValue: (e) => parseEventData(e)?.logonTypeLabel ?? '',
+    searchKeys: ['logon', 'type'],
+  },
+  {
+    key: 'ip',
+    label: 'IP',
+    defaultVisible: true,
+    sortable: true,
+    flex: 1.5,
+    minWidth: 110,
+    getValue: (e) => {
+      const ip = parseEventData(e)?.ipAddress;
+      return ip && ip !== '-' ? ip : '';
+    },
+    searchKeys: ['address'],
+  },
+  {
+    key: 'time',
+    label: 'Time',
+    defaultVisible: true,
+    sortable: true,
+    flex: 1.2,
+    minWidth: 100,
+    getValue: (e) => e.timeCreated,
+  },
+];
+
+/* ------------------------------------------------------------------ */
+/*  JSON export mapper                                                 */
+/* ------------------------------------------------------------------ */
+
+export function securityJsonMapper(e: WinEvent): Record<string, unknown> {
+  const parsed = parseEventData(e);
+  return {
+    id: e.id,
+    eventId: e.eventId,
+    eventLabel: EVENT_LABELS[e.eventId] ?? null,
+    level: e.level,
+    machineName: e.machineName,
+    timeCreated: e.timeCreated,
+    user: parsed?.targetUserName ?? null,
+    logonType: parsed?.logonTypeLabel ?? null,
+    ipAddress: parsed?.ipAddress ?? null,
+  };
+}

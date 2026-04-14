@@ -1,0 +1,20 @@
+title: Classic Constrained Delegation Modified
+id: a0000001-0000-0000-0000-000000000044
+name: delegation_backdoor
+status: stable
+description: Constrained delegation rights were granted to a user account (AllowedToDelegateTo changed). Attackers set delegation to enable lateral movement to specific services (e.g., CIFS on a DC).
+author: WinStride CCDC
+date: 2025-01-01
+tags:
+    - attack.persistence
+    - attack.t1098
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4738
+    filter_empty:
+        AllowedToDelegateTo: '-'
+    condition: selection and not filter_empty
+level: high

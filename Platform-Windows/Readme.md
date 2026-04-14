@@ -47,6 +47,14 @@ Platform-Windows/
 │   ├── roles/                # All Ansible roles
 │   └── logontracer/          # LogonTracer setup
 │
+├── WinStride/                # WinStride SIEM (agent + API + web UI)
+│   ├── README.md             # Project overview and quick start
+│   ├── RISK-ASSESSMENT.md    # Per-component risk breakdown
+│   ├── WinStride-Agent/      # Windows service agent (.NET 8)
+│   ├── WinStride-Api/        # Ingest API (ASP.NET, SQLite)
+│   ├── Winstride-Web/        # React frontend (121 SIGMA rules)
+│   └── scripts/              # Setup/deploy PowerShell scripts
+│
 └── CA/Images/                # Screenshots for CA docs
 ```
 

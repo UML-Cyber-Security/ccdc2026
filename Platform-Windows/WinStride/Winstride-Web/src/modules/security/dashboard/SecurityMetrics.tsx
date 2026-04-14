@@ -1,0 +1,114 @@
+import { useState, useMemo } from 'react';
+import type { WinEvent, LogonInfo } from '../shared/types';
+import { getDefaultFilters, type GraphFilters } from '../shared/filterTypes';
+import { isSystemAccount, ALL_EVENT_IDS } from '../shared/eventMeta';
+import { useModuleEvents } from '../../../shared/hooks/useModuleEvents';
+import { useDashboardStats } from './useDashboardStats';
+import { resolveTimeBounds } from './timeUtils';
+import TimeRangePicker from './TimeRangePicker';
+import StatCard from './StatCard';
+import TimelineChart from './TimelineChart';
+import TopNBar from './TopNBar';
+import BreakdownDonut from './BreakdownDonut';
+import FailuresTable from './FailuresTable';
+import { parseLogons } from '../shared/parseLogons';
+
+export default function SecurityMetrics({ visible = true }: { visible?: boolean }) {
+  const [timeStart, setTimeStart] = useState(() => new Date(Date.now() - 24 * 3600_000).toISOString());
+  const [timeEnd, setTimeEnd] = useState('');
+
+  const filters = useMemo((): GraphFilters => {
+    const f = getDefaultFilters();
+    f.timeStart = timeStart;
+    f.timeEnd = timeEnd;
+    // Dashboard shows all event types
+    f.eventFilters = new Map();
+    return f;
+  }, [timeStart, timeEnd]);
+
+  const { events, isLoading, error } = useModuleEvents({
+    logName: 'Security',
+    allEventIds: ALL_EVENT_IDS,
+    eventFilters: filters.eventFilters,
+    timeStart: filters.timeStart,
+    timeEnd: filters.timeEnd,
+  }, { enabled: visible });
+
+  const logons = useMemo(() => {
+    if (!events) return [];
+    const all = parseLogons(events);
+    return all.filter(l => !isSystemAccount(l.targetUserName));
+  }, [events]);
+
+  const { startMs, endMs } = useMemo(
+    () => resolveTimeBounds(logons, timeStart, timeEnd),
+    [logons, timeStart, timeEnd],
+  );
+
+  const stats = useDashboardStats(logons, startMs, endMs);
+
+  function handleTimeChange(start: string, end: string) {
+    setTimeStart(start);
+    setTimeEnd(end);
+  }
+
+  if (error) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <p className="text-[#ff7b72] text-sm">Failed to load events: {(error as Error).message}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col gap-4 overflow-y-auto min-h-0 pr-1">
+      {/* Header row */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <TimeRangePicker timeStart={timeStart} timeEnd={timeEnd} onTimeChange={handleTimeChange} />
+        <div className="flex items-center gap-2 text-xs text-gray-300">
+          {isLoading && (
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-[#58a6ff] animate-pulse" />
+              Loading...
+            </span>
+          )}
+          {!isLoading && events && (
+            <span>{events.length.toLocaleString()} raw events</span>
+          )}
+        </div>
+      </div>
+
+      {/* Stat cards row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatCard title="Total Events" value={stats.totalEvents} sparkline={stats.totalSparkline} color="#58a6ff" />
+        <StatCard title="Failed Logons" value={stats.failedLogons} sparkline={stats.failedSparkline} color="#ff7b72" />
+        <StatCard title="Elevated Sessions" value={stats.elevatedSessions} sparkline={stats.elevatedSparkline} color="#f0a050" />
+        <StatCard
+          title="Unique Users / Machines"
+          value={stats.uniqueUsers}
+          sparkline={[]}
+          color="#56d364"
+          subtitle={`${stats.uniqueUsers} users / ${stats.uniqueMachines} machines`}
+        />
+      </div>
+
+      {/* Timeline */}
+      <TimelineChart data={stats.timeline} />
+
+      {/* Top-N row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <TopNBar title="Top Users by Activity" data={stats.topUsers} color="#58a6ff" />
+        <TopNBar title="Top Source IPs" data={stats.topIps} color="#79c0ff" />
+      </div>
+
+      {/* Donut row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <BreakdownDonut title="Logon Type Breakdown" data={stats.logonTypes} />
+        <BreakdownDonut title="Auth Method Distribution" data={stats.authMethods} />
+      </div>
+
+      {/* Failures table */}
+      <FailuresTable data={stats.recentFailures} />
+    </div>
+  );
+}
