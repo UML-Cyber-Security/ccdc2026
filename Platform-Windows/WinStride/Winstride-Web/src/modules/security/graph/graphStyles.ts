@@ -1,0 +1,273 @@
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CyStylesheet = any;
+
+// Group icon — two silhouettes (white on transparent)
+const GROUP_ICON = `data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+    <circle cx="38" cy="30" r="12" fill="white"/>
+    <path d="M18,72 Q18,50 38,50 Q58,50 58,72" fill="white"/>
+    <circle cx="62" cy="30" r="12" fill="white"/>
+    <path d="M42,72 Q42,50 62,50 Q82,50 82,72" fill="white"/>
+  </svg>`
+)}`;
+
+// Simple 4-pane Windows logo as SVG data URI (white on transparent)
+const WIN_LOGO = `data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+    <rect x="10" y="10" width="36" height="36" rx="3" fill="white"/>
+    <rect x="54" y="10" width="36" height="36" rx="3" fill="white"/>
+    <rect x="10" y="54" width="36" height="36" rx="3" fill="white"/>
+    <rect x="54" y="54" width="36" height="36" rx="3" fill="white"/>
+  </svg>`
+)}`;
+
+// Cast needed: Cytoscape runtime supports gradient arrays
+// but @types/cytoscape's StylesheetStyle is too narrow
+export const graphStyles: CyStylesheet[] = [
+  // Base node
+  {
+    selector: 'node',
+    style: {
+      label: 'data(label)',
+      color: '#fde68a',
+      'font-size': '14px',
+      'font-family': 'Inter, system-ui, sans-serif',
+      'font-weight': 600,
+      'text-valign': 'bottom',
+      'text-halign': 'center',
+      'text-margin-y': 8,
+      'text-outline-color': '#010409',
+      'text-outline-width': 3,
+      'text-outline-opacity': 1,
+      'text-max-width': '120px',
+      'text-wrap': 'ellipsis',
+      'min-zoomed-font-size': 0,
+      'overlay-opacity': 0,
+      'border-width': 1,
+      'background-opacity': 1,
+      'transition-property': 'opacity, border-width, border-color, background-color',
+      'transition-duration': 180,
+    },
+  },
+
+  // User nodes — blue circles with radial gradient
+  {
+    selector: 'node[type = "user"]',
+    style: {
+      shape: 'ellipse',
+      'background-color': '#1f6feb',
+      'background-fill': 'radial-gradient',
+      'background-gradient-stop-colors': '#79c0ff #3b82f6 #1a56db',
+      'background-gradient-stop-positions': '0% 50% 100%',
+      'border-color': '#58a6ff',
+      'border-opacity': 0.5,
+      width: 'mapData(logonCount, 1, 50, 24, 50)',
+      height: 'mapData(logonCount, 1, 50, 24, 50)',
+    },
+  },
+
+  // Privileged user — red-pink diamond, radial gradient
+  {
+    selector: 'node[type = "user"][?privileged]',
+    style: {
+      shape: 'diamond',
+      'background-color': '#da3633',
+      'background-fill': 'radial-gradient',
+      'background-gradient-stop-colors': '#ffa198 #f85149 #b62324',
+      'background-gradient-stop-positions': '0% 50% 100%',
+      'border-color': '#f97583',
+      'border-opacity': 0.6,
+      width: 'mapData(logonCount, 1, 50, 30, 56)',
+      height: 'mapData(logonCount, 1, 50, 30, 56)',
+    },
+  },
+
+  // Machine nodes — rounded square with Windows logo
+  {
+    selector: 'node[type = "machine"]',
+    style: {
+      shape: 'round-rectangle',
+      'background-color': '#2ea043',
+      'border-color': '#3fb950',
+      'border-opacity': 0.5,
+      width: 'mapData(logonCount, 1, 100, 36, 64)',
+      height: 'mapData(logonCount, 1, 100, 36, 64)',
+      'background-image': WIN_LOGO,
+      'background-width': '75%',
+      'background-height': '75%',
+      'background-image-opacity': 0.4,
+      'font-size': '15px',
+    },
+  },
+
+  // Group nodes — purple shield with group icon
+  {
+    selector: 'node[type = "group"]',
+    style: {
+      shape: 'round-pentagon',
+      'background-color': '#7c3aed',
+      'background-fill': 'radial-gradient',
+      'background-gradient-stop-colors': '#c4b5fd #8b5cf6 #6d28d9',
+      'background-gradient-stop-positions': '0% 50% 100%',
+      'border-color': '#a78bfa',
+      'border-opacity': 0.5,
+      width: 'mapData(logonCount, 1, 20, 32, 56)',
+      height: 'mapData(logonCount, 1, 20, 32, 56)',
+      'background-image': GROUP_ICON,
+      'background-width': '70%',
+      'background-height': '70%',
+      'background-offset-y': '16%',
+      'background-image-opacity': 0.3,
+    },
+  },
+
+  // Edges — bezier auto-fans parallel edges between same node pair
+  {
+    selector: 'edge',
+    style: {
+      label: 'data(logonTypeLabel)',
+      color: '#ffffff',
+      'font-size': '10px',
+      'font-family': 'Inter, system-ui, sans-serif',
+      'font-weight': 400,
+      'text-outline-color': '#010409',
+      'text-outline-width': 2,
+      'text-outline-opacity': 1,
+      'text-rotation': 'autorotate',
+      'text-margin-y': -8,
+      'min-zoomed-font-size': 0,
+      width: 'mapData(logonCount, 1, 50, 1.5, 5)',
+      'line-color': '#4a5568',
+      'target-arrow-color': '#6b7280',
+      'target-arrow-shape': 'triangle',
+      'arrow-scale': 0.6,
+      'curve-style': 'bezier',
+      'control-point-step-size': 40,
+      opacity: 1,
+      'text-opacity': 1,
+      'overlay-padding': 8,
+      'transition-property': 'opacity, line-color, width',
+      'transition-duration': 180,
+    },
+  },
+
+  // Failed logon edges — red dashed
+  {
+    selector: 'edge[?isFailed]',
+    style: {
+      'line-color': '#dc2626',
+      'target-arrow-color': '#ef4444',
+      'line-style': 'dashed',
+      'line-dash-pattern': [6, 3],
+    },
+  },
+  // Severity edge colors (info omitted — matches default gray)
+  {
+    selector: 'edge[severity = "low"]',
+    style: { 'line-color': '#58a6ff', 'target-arrow-color': '#58a6ff' },
+  },
+  {
+    selector: 'edge[severity = "medium"]',
+    style: { 'line-color': '#f0883e', 'target-arrow-color': '#f0883e' },
+  },
+  {
+    selector: 'edge[severity = "high"]',
+    style: { 'line-color': '#f85149', 'target-arrow-color': '#f85149', width: 'mapData(logonCount, 1, 50, 2, 6)' },
+  },
+  {
+    selector: 'edge[severity = "critical"]',
+    style: { 'line-color': '#ec4899', 'target-arrow-color': '#f472b6', width: 'mapData(logonCount, 1, 50, 2.5, 7)' },
+  },
+
+  // Highlighted — selected + neighbors glow in their own color
+  {
+    selector: 'node.highlighted',
+    style: {
+      'border-width': 2.5,
+      'border-opacity': 1,
+      'z-index': 10,
+      color: '#fef08a',
+      'font-weight': 700,
+      'text-outline-width': 3.5,
+    },
+  },
+  {
+    selector: 'node.highlighted[type = "user"]',
+    style: {
+      'border-color': '#79c0ff',
+      'border-width': 4,
+    },
+  },
+  {
+    selector: 'node.highlighted[type = "user"][?privileged]',
+    style: {
+      'border-color': '#ffa198',
+      'border-width': 4,
+    },
+  },
+  {
+    selector: 'node.highlighted[type = "machine"]',
+    style: {
+      'border-color': '#56d364',
+      'border-width': 4,
+    },
+  },
+  {
+    selector: 'node.highlighted[type = "group"]',
+    style: {
+      'border-color': '#c4b5fd',
+      'border-width': 4,
+    },
+  },
+  {
+    selector: 'edge.highlighted',
+    style: {
+      'line-color': '#6e7681',
+      'target-arrow-color': '#6e7681',
+      opacity: 0.9,
+      width: 'mapData(logonCount, 1, 50, 1.5, 5)',
+      'z-index': 10,
+    },
+  },
+  {
+    selector: 'edge.highlighted[?isFailed]',
+    style: {
+      'line-color': '#f85149',
+      'target-arrow-color': '#f85149',
+    },
+  },
+  // Highlighted severity edges — brighter variants
+  {
+    selector: 'edge.highlighted[severity = "low"]',
+    style: { 'line-color': '#79c0ff', 'target-arrow-color': '#79c0ff' },
+  },
+  {
+    selector: 'edge.highlighted[severity = "medium"]',
+    style: { 'line-color': '#f0a050', 'target-arrow-color': '#f0a050' },
+  },
+  {
+    selector: 'edge.highlighted[severity = "high"]',
+    style: { 'line-color': '#ff7b72', 'target-arrow-color': '#ff7b72', width: 'mapData(logonCount, 1, 50, 2.5, 7)' },
+  },
+  {
+    selector: 'edge.highlighted[severity = "critical"]',
+    style: { 'line-color': '#f472b6', 'target-arrow-color': '#f472b6', width: 'mapData(logonCount, 1, 50, 3, 8)' },
+  },
+
+  // Dimmed — ghost outline
+  {
+    selector: 'node.dimmed',
+    style: {
+      'background-opacity': 0.05,
+      'border-opacity': 0.1,
+      'text-opacity': 0.08,
+      'border-width': 1,
+    },
+  },
+  {
+    selector: 'edge.dimmed',
+    style: {
+      opacity: 0.04,
+    },
+  },
+];

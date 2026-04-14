@@ -1,0 +1,252 @@
+using Microsoft.AspNetCore.Authentication.Certificate;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OData;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.OData.Edm;
+using Microsoft.OData.ModelBuilder;
+using System.Data;
+using System.Data.Common;
+using System.Security.Cryptography.X509Certificates;
+using WinStride_Api.Models;
+using WinStrideApi.Data;
+using WinStrideApi.Models;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseWindowsService();
+
+var serverCertThumbprint = builder.Configuration["ServerCertThumbprint"];
+var tlsEnabled = !string.IsNullOrWhiteSpace(serverCertThumbprint);
+var httpPort = builder.Configuration.GetValue("HttpPort", 5090);
+var httpsPort = builder.Configuration.GetValue("HttpsPort", 7097);
+var corsOrigins = builder.Configuration.GetSection("CorsOrigins").Get<string[]>()
+    ?? ["http://localhost:5173"];
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    if (tlsEnabled)
+    {
+        var serverCertificate = FindServerCertificate(serverCertThumbprint!);
+
+        // Secure mode: HTTPS only with mTLS, no HTTP fallback
+        options.ListenAnyIP(httpsPort, listenOptions =>
+        {
+            listenOptions.UseHttps(httpsOptions =>
+            {
+                httpsOptions.ServerCertificate = serverCertificate;
+                httpsOptions.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+            });
+        });
+    }
+    else
+    {
+        // Lab/dev mode: HTTP only, no TLS
+        options.ListenAnyIP(httpPort);
+    }
+});
+
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? "Data Source=winstride.db";
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlite(connectionString));
+
+var modelBuilder = new ODataConventionModelBuilder();
+modelBuilder.EnableLowerCamelCase();
+
+modelBuilder.EntitySet<WinEvent>("Event");
+modelBuilder.EntitySet<Heartbeat>("Heartbeat");
+modelBuilder.EntitySet<TCPView>("NetworkConnections");
+modelBuilder.EntitySet<AutorunView>("Autoruns");
+modelBuilder.EntitySet<WinProcess>("WinProcesses");
+
+if (tlsEnabled)
+{
+    builder.Services.AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme)
+        .AddCertificate(options =>
+        {
+            options.AllowedCertificateTypes = CertificateTypes.All;
+
+            options.Events = new CertificateAuthenticationEvents
+            {
+                OnCertificateValidated = context =>
+                {
+                    context.Success();
+                    return Task.CompletedTask;
+                },
+                OnAuthenticationFailed = context =>
+                {
+                    context.Fail("Certificate failed validation or was not provided.");
+                    return Task.CompletedTask;
+                }
+            };
+        });
+    builder.Services.AddAuthorization();
+}
+else
+{
+    builder.Services.AddAuthorization(options =>
+    {
+        options.FallbackPolicy = null;
+        options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+            .RequireAssertion(_ => true)
+            .Build();
+    });
+}
+
+builder.Services.AddControllers().AddNewtonsoftJson().AddOData(options =>
+    options.Select().Filter().OrderBy().Count().SetMaxTop(5000).AddRouteComponents(
+        "api",
+        modelBuilder.GetEdmModel()));
+
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+});
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+});
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactUI",
+        policy =>
+        {
+            policy.WithOrigins(corsOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        });
+});
+
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    db.Database.EnsureCreated();
+    EnsureSqliteCompatibility(db);
+}
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseResponseCompression();
+app.UseCors("AllowReactUI");
+
+if (tlsEnabled)
+{
+    app.UseAuthentication();
+}
+
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+static void EnsureSqliteCompatibility(ApplicationDbContext db)
+{
+    if (!db.Database.IsSqlite())
+    {
+        return;
+    }
+
+    var connection = db.Database.GetDbConnection();
+    var openedHere = connection.State != ConnectionState.Open;
+
+    if (openedHere)
+    {
+        connection.Open();
+    }
+
+    try
+    {
+        EnsureTableExists(
+            connection,
+            db,
+            "Heartbeats",
+            @"CREATE TABLE ""Heartbeats"" (
+                ""Id"" INTEGER NOT NULL CONSTRAINT ""PK_Heartbeats"" PRIMARY KEY AUTOINCREMENT,
+                ""MachineName"" TEXT NOT NULL,
+                ""IsAlive"" INTEGER NOT NULL,
+                ""LastSeen"" TEXT NOT NULL
+            );");
+
+        EnsureColumnExists(
+            connection,
+            db,
+            "WinProcesses",
+            "VerificationStatus",
+            @"ALTER TABLE ""WinProcesses"" ADD COLUMN ""VerificationStatus"" TEXT NULL;");
+    }
+    finally
+    {
+        if (openedHere)
+        {
+            connection.Close();
+        }
+    }
+}
+
+static void EnsureTableExists(
+    DbConnection connection,
+    ApplicationDbContext db,
+    string tableName,
+    string createSql)
+{
+    using var command = connection.CreateCommand();
+    command.CommandText = $"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{tableName}';";
+
+    var tableExists = Convert.ToInt32(command.ExecuteScalar()) > 0;
+    if (!tableExists)
+    {
+        db.Database.ExecuteSqlRaw(createSql);
+    }
+}
+
+static void EnsureColumnExists(
+    DbConnection connection,
+    ApplicationDbContext db,
+    string tableName,
+    string columnName,
+    string alterSql)
+{
+    using var command = connection.CreateCommand();
+    command.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{tableName}') WHERE name = '{columnName}';";
+
+    var columnExists = Convert.ToInt32(command.ExecuteScalar()) > 0;
+    if (!columnExists)
+    {
+        db.Database.ExecuteSqlRaw(alterSql);
+    }
+}
+
+static X509Certificate2 FindServerCertificate(string thumbprint)
+{
+    string normalizedThumbprint = thumbprint.Replace(" ", string.Empty).Trim();
+
+    foreach (var location in new[] { StoreLocation.LocalMachine, StoreLocation.CurrentUser })
+    {
+        using var store = new X509Store(StoreName.My, location);
+        store.Open(OpenFlags.ReadOnly);
+
+        var certs = store.Certificates.Find(
+            X509FindType.FindByThumbprint,
+            normalizedThumbprint,
+            validOnly: false);
+
+        if (certs.Count > 0)
+        {
+            return certs[0];
+        }
+    }
+
+    throw new InvalidOperationException(
+        $"Server certificate with thumbprint '{normalizedThumbprint}' was not found in LocalMachine\\My or CurrentUser\\My.");
+}
