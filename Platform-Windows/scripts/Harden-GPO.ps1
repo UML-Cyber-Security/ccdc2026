@@ -8,6 +8,7 @@ param(
     [switch]$CredProtection,   # WDigest, anonymous restriction
     [switch]$NetworkHardening, # LLMNR, NBT-NS, WPAD, NLA for RDP
     [switch]$SkipReset,        # Run -All but skip GPO reset
+    [switch]$NoLSAProtection,  # Skip RunAsPPL (use if you have unsigned SSPs / smart-card middleware)
     [Alias("S")]
     [switch]$Safe,             # Safe mode: skips settings that could break services
     [Alias("SS")]
@@ -88,8 +89,10 @@ foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
     Write-Setting "Module loaded: $mod"
 }
 
-$Domain = (Get-ADDomain).DNSRoot
-$DomainDN = (Get-ADDomain).DistinguishedName
+$adDomain = Get-ADDomain
+$Domain = $adDomain.DNSRoot
+$DomainDN = $adDomain.DistinguishedName
+$DomainSID = $adDomain.DomainSID.Value
 Write-Setting "Domain: $Domain ($DomainDN)"
 
 # ── Backup existing GPOs ────────────────────────────────────────────────────
@@ -230,6 +233,8 @@ AuditAccountManage = 3
 AuditProcessTracking = 3
 AuditDSAccess = 3
 AuditAccountLogon = 3
+[Privilege Rights]
+SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,*$DomainSID-513
 "@
     $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
     Write-Setting "GptTmpl.inf written (7 categories enabled, 2 disabled)"
@@ -550,6 +555,17 @@ if ($runCredProtection) {
         -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
         -ValueName "RestrictRemoteSAM" -Value "O:BAG:BAD:(A;;RC;;;BA)" -Type String | Out-Null
     Write-Setting "HKLM\System\CurrentControlSet\Control\Lsa\RestrictRemoteSAM = O:BAG:BAD:(A;;RC;;;BA)"
+
+    # LSA Protection (RunAsPPL) — LSASS as PPL, blocks userland LSASS dumps
+    # Requires reboot. Server 2012 R2+ / Win 8.1+. Skip with -NoLSAProtection.
+    if (-not $NoLSAProtection) {
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+            -ValueName "RunAsPPL" -Value 1
+        Write-Warn "RunAsPPL enabled — requires reboot to take effect"
+    } else {
+        Write-Warn "Skipped RunAsPPL (NoLSAProtection)"
+    }
 
     $summary += "Credential Protection"
 }

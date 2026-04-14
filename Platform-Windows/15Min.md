@@ -473,6 +473,23 @@ foreach ($u in $toUnlink) {
     }
 }
 
+# ── Step 8: Add de-privileged users to Remote Desktop Users ─────────────────
+Write-Host "`n=== REMOTE DESKTOP ACCESS ===" -ForegroundColor Cyan
+foreach ($r in $toRemoveUsers) {
+    if ($r.Group -in @("Domain Admins","Administrators","Enterprise Admins")) {
+        try {
+            Add-ADGroupMember -Identity "Remote Desktop Users" -Members $r.Member -ErrorAction Stop
+            Write-Host "  ADDED $($r.Member) to Remote Desktop Users (was in $($r.Group))" -ForegroundColor Green
+        } catch {
+            if ($_.Exception.Message -match "already a member") {
+                Write-Host "  OK $($r.Member) already in Remote Desktop Users" -ForegroundColor Gray
+            } else {
+                Write-Host "  FAILED to add $($r.Member) to Remote Desktop Users: $_" -ForegroundColor Red
+            }
+        }
+    }
+}
+
 Write-Host "`n  Done. Backups:" -ForegroundColor Cyan
 Write-Host "    Groups: $backupFile" -ForegroundColor Gray
 Write-Host "    GPOs:   $gpoBackupFile" -ForegroundColor Gray
@@ -484,7 +501,7 @@ Write-Host "    Review unlinked GPOs in gpmc.msc — delete manually if maliciou
 </details>
 
 <details>
-<summary><b>3. Review & Kick Active Sessions</b> — Show/kill RDP, disable SSH/WinRM</summary>
+<summary><b>3. Review & Kick Active Sessions</b> — Show/kill RDP, disable SSH/WinRM, clean shares/mounts</summary>
 
 > [!WARNING]
 > **Disabling an account does NOT kick active sessions.** You must also logoff/terminate existing sessions.
@@ -535,6 +552,72 @@ Stop-Service sshd -Force -ErrorAction SilentlyContinue
 Set-Service sshd -StartupType Disabled -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName "Block SSH Inbound" -Direction Inbound -Protocol TCP -LocalPort 22,2222 -Action Block -ErrorAction SilentlyContinue
 Write-Host "[+] SSH killed, disabled, and blocked" -ForegroundColor Green
+```
+
+#### Audit & remove non-default shares, disconnect mapped drives
+```powershell
+$isDC = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole -ge 4
+$adShares = @("NETLOGON", "SYSVOL")
+
+# ── Backup current shares ──────────────────────────────────────────────────
+$backupFile = "C:\shares-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
+$shares = Get-SmbShare -ErrorAction SilentlyContinue
+$shares | Select-Object Name, Path, Description, ScopeName | Export-Csv -Path $backupFile -NoTypeInformation
+Write-Host "[+] Backed up share list to $backupFile" -ForegroundColor Green
+
+# ── Show all shares ────────────────────────────────────────────────────────
+Write-Host "`n=== SMB Shares ===" -ForegroundColor Cyan
+$toRemove = @()
+foreach ($s in $shares) {
+    if ($s.Name -match '^\w\$$|^ADMIN\$$|^IPC\$$') {
+        Write-Host "  [ADMIN] $($s.Name) -> $($s.Path)" -ForegroundColor DarkGray
+        continue
+    }
+    if ($isDC -and $s.Name -in $adShares) {
+        Write-Host "  [AD-OK] $($s.Name) -> $($s.Path)" -ForegroundColor DarkGray
+        continue
+    }
+    $access = Get-SmbShareAccess -Name $s.Name -ErrorAction SilentlyContinue
+    $perms = ($access | ForEach-Object { "$($_.AccountName):$($_.AccessRight)" }) -join ", "
+    Write-Host "  [FOUND] $($s.Name) -> $($s.Path)  ($perms)" -ForegroundColor Yellow
+    $toRemove += $s
+}
+
+# ── Show mapped drives ────────────────────────────────────────────────────
+Write-Host "`n=== Mapped Drives ===" -ForegroundColor Cyan
+$mapped = net use 2>&1 | Where-Object { $_ -match "^\s*(OK|Disconnected|Unavailable)" }
+if ($mapped) {
+    $mapped | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+} else {
+    Write-Host "  No mapped drives" -ForegroundColor Green
+}
+
+# ── Confirm before deleting ────────────────────────────────────────────────
+$totalChanges = $toRemove.Count + $(if ($mapped) { 1 } else { 0 })
+if ($totalChanges -eq 0) {
+    Write-Host "`n[OK] Nothing to clean up." -ForegroundColor Green
+    return
+}
+
+Write-Host ""
+$confirm = Read-Host "Remove $($toRemove.Count) share(s) and disconnect mapped drives? (y/n)"
+if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
+
+foreach ($s in $toRemove) {
+    try {
+        Remove-SmbShare -Name $s.Name -Force -ErrorAction Stop
+        Write-Host "  [REMOVED] $($s.Name)" -ForegroundColor Green
+    } catch {
+        Write-Host "  [FAILED] $($s.Name) — $_" -ForegroundColor Red
+    }
+}
+
+if ($mapped) {
+    net use * /delete /yes 2>&1 | Out-Null
+    Write-Host "  [+] All mapped drives disconnected" -ForegroundColor Green
+}
+
+Write-Host "`n  Backup: $backupFile" -ForegroundColor Gray
 ```
 
 </details>
@@ -598,6 +681,7 @@ param(
     [switch]$CredProtection,   # WDigest, anonymous restriction
     [switch]$NetworkHardening, # LLMNR, NBT-NS, WPAD, NLA for RDP
     [switch]$SkipReset,        # Run -All but skip GPO reset
+    [switch]$NoLSAProtection,  # Skip RunAsPPL (use if you have unsigned SSPs / smart-card middleware)
     [Alias("S")]
     [switch]$Safe,             # Safe mode: skips settings that could break services
     [Alias("SS")]
@@ -678,8 +762,10 @@ foreach ($mod in @("GroupPolicy", "ActiveDirectory")) {
     Write-Setting "Module loaded: $mod"
 }
 
-$Domain = (Get-ADDomain).DNSRoot
-$DomainDN = (Get-ADDomain).DistinguishedName
+$adDomain = Get-ADDomain
+$Domain = $adDomain.DNSRoot
+$DomainDN = $adDomain.DistinguishedName
+$DomainSID = $adDomain.DomainSID.Value
 Write-Setting "Domain: $Domain ($DomainDN)"
 
 # ── Backup existing GPOs ────────────────────────────────────────────────────
@@ -820,6 +906,8 @@ AuditAccountManage = 3
 AuditProcessTracking = 3
 AuditDSAccess = 3
 AuditAccountLogon = 3
+[Privilege Rights]
+SeRemoteInteractiveLogonRight = *S-1-5-32-544,*S-1-5-32-555,*$DomainSID-513
 "@
     $gptTmpl | Out-File -FilePath "$secEditPath\GptTmpl.inf" -Encoding Unicode -Force
     Write-Setting "GptTmpl.inf written (7 categories enabled, 2 disabled)"
@@ -1147,6 +1235,17 @@ if ($runCredProtection) {
         -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
         -ValueName "RestrictRemoteSAM" -Value "O:BAG:BAD:(A;;RC;;;BA)" -Type String | Out-Null
     Write-Setting "HKLM\System\CurrentControlSet\Control\Lsa\RestrictRemoteSAM = O:BAG:BAD:(A;;RC;;;BA)"
+
+    # LSA Protection (RunAsPPL) — LSASS as PPL, blocks userland LSASS dumps
+    # Requires reboot. Server 2012 R2+ / Win 8.1+. Skip with -NoLSAProtection.
+    if (-not $NoLSAProtection) {
+        Set-RegValue -GPOName $GPOName `
+            -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
+            -ValueName "RunAsPPL" -Value 1
+        Write-Warn "RunAsPPL enabled — requires reboot to take effect"
+    } else {
+        Write-Warn "Skipped RunAsPPL (NoLSAProtection)"
+    }
 
     $summary += "Credential Protection"
 }
@@ -2117,55 +2216,367 @@ Replace the search term with whatever you're looking for.
 </details>
 
 <details>
-<summary><b>9. Rotate All Passwords</b> — Local + AD password reset, saves to CSV</summary>
+<summary><b>9. Rotate All Passwords</b> — Deterministic reset: one master hash → unique password per user, recoverable on any platform (Linux/Windows) from same hash + username</summary>
+
+> **How it works:** each user's new password = `SHA256("<master_hash>:<username>\n")` as lowercase hex. You only memorize the master hash — any specific user's password can be re-derived later. Linux counterpart script (`chpasswd` + `openssl dgst -sha256`) produces byte-identical output for the same hash + username.
+>
+> **OpSec:** master hash prompted as `SecureString`, never written to disk, never in any managed string. Derived passwords live only as `SecureString` in zeroed byte buffers. PSReadLine history scrubbed. No CSV, no log file — event 4724/4738 on the DC is unavoidable but gives no password material.
+>
+> **Before running:** launch `powershell.exe -NoProfile`. Preview phase shows every account it will touch — add names to `$ProtectedNames` / `$ProtectedSam` if preview includes anything you want to keep (e.g. an emergency admin).
+>
+> Also available as standalone files: `scripts/DeterministicPassRotation-Local.ps1` and `scripts/DeterministicPassRotation-AD.ps1`.
 
 #### Local accounts (run on every machine)
+
 ```powershell
-$excludedUsers = @("blackteam", "black-team", "svc_local")
-$logFile = "$env:USERPROFILE\Desktop\local_passwords.csv"
-"Username,NewPassword" | Out-File -FilePath $logFile
+#Requires -RunAsAdministrator
+$ErrorActionPreference = 'Stop'
 
-function Generate-RandomPassword {
-    param ([int]$length = 20)
-    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
-    -join ((1..$length) | ForEach-Object { Get-Random -InputObject $chars.ToCharArray() })
-}
+try {
+    Set-PSReadLineOption -HistorySaveStyle SaveNothing
+    $histPath = (Get-PSReadlineOption).HistorySavePath
+    if ($histPath -and (Test-Path $histPath)) { Remove-Item $histPath -Force }
+} catch {}
+Clear-History -ErrorAction SilentlyContinue
 
-Get-LocalUser | Where-Object { $_.Enabled -eq $true } | ForEach-Object {
-    if ($excludedUsers -contains $_.Name) { Write-Host "Skipping: $($_.Name)" -ForegroundColor Yellow; return }
-    $pw = Generate-RandomPassword
+# Names that must NEVER be reset (exact match, case-insensitive).
+# Administrator is left IN (it will be reset) — add it here if you want an
+# emergency login preserved.
+$ProtectedNames = @(
+    'DefaultAccount','WDAGUtilityAccount',
+    'blackteam','black-team',
+    'svcroot','svc_root','svc-root'
+)
+
+function SecureStringToUtf8Bytes {
+    param([System.Security.SecureString]$Secure)
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
     try {
-        Set-LocalUser -Name $_.Name -Password (ConvertTo-SecureString $pw -AsPlainText -Force)
-        "$($_.Name),$pw" | Out-File -FilePath $logFile -Append
-        Write-Host "[+] $($_.Name)" -ForegroundColor Green
-    } catch { Write-Host "[-] $($_.Name): $_" -ForegroundColor Red }
+        $len = [System.Runtime.InteropServices.Marshal]::ReadInt32($bstr, -4) / 2
+        $chars = New-Object char[] $len
+        for ($i = 0; $i -lt $len; $i++) {
+            $chars[$i] = [char][System.Runtime.InteropServices.Marshal]::ReadInt16($bstr, $i*2)
+        }
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($chars)
+        [Array]::Clear($chars, 0, $chars.Length)
+        return ,$bytes
+    } finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
 }
-Write-Host "`n[*] Passwords saved to $logFile" -ForegroundColor Cyan
+
+function HexBytesToSecureString {
+    param([byte[]]$HexBytes)
+    $ss = New-Object System.Security.SecureString
+    foreach ($b in $HexBytes) { $ss.AppendChar([char]$b) }
+    $ss.MakeReadOnly()
+    [Array]::Clear($HexBytes, 0, $HexBytes.Length)
+    return $ss
+}
+
+function DeriveHexBytes {
+    param([byte[]]$HashBytes, [string]$Username)
+
+    $userB = [System.Text.Encoding]::UTF8.GetBytes($Username)
+    $buf = New-Object byte[] ($HashBytes.Length + 1 + $userB.Length + 1)
+    [Buffer]::BlockCopy($HashBytes, 0, $buf, 0, $HashBytes.Length)
+    $buf[$HashBytes.Length] = 58
+    [Buffer]::BlockCopy($userB, 0, $buf, $HashBytes.Length + 1, $userB.Length)
+    $buf[$buf.Length - 1] = 10
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $digest = $sha.ComputeHash($buf) } finally { $sha.Dispose() }
+
+    [Array]::Clear($buf, 0, $buf.Length)
+    [Array]::Clear($userB, 0, $userB.Length)
+
+    $hex = New-Object byte[] ($digest.Length * 2)
+    $tbl = [byte[]]@(48,49,50,51,52,53,54,55,56,57,97,98,99,100,101,102)
+    for ($i = 0; $i -lt $digest.Length; $i++) {
+        $hex[$i*2]     = $tbl[($digest[$i] -shr 4) -band 0x0F]
+        $hex[$i*2 + 1] = $tbl[ $digest[$i]        -band 0x0F]
+    }
+    [Array]::Clear($digest, 0, $digest.Length)
+    return ,$hex
+}
+
+Write-Host "`n=== PHASE 1: ENUMERATE LOCAL USERS ===" -ForegroundColor Cyan
+$allLocal = Get-LocalUser
+$toReset  = @()
+$skipped  = @()
+foreach ($u in $allLocal) {
+    $name = $u.Name
+    if (-not $u.Enabled) { $skipped += [PSCustomObject]@{Name=$name; Reason='disabled'}; continue }
+    if ($ProtectedNames -contains $name) { $skipped += [PSCustomObject]@{Name=$name; Reason='protected'}; continue }
+    $toReset += $name
+}
+Write-Host "  Will reset ($($toReset.Count)):" -ForegroundColor Yellow
+foreach ($n in $toReset) { Write-Host "    $n" -ForegroundColor Yellow }
+Write-Host "  Skipped ($($skipped.Count)):" -ForegroundColor Gray
+foreach ($s in $skipped) { Write-Host "    $($s.Name)  [$($s.Reason)]" -ForegroundColor Gray }
+if ($toReset.Count -eq 0) { Write-Host "`n[OK] Nothing to reset." -ForegroundColor Green; return }
+
+Write-Host ""
+$confirm = Read-Host "Proceed with $($toReset.Count) local password resets? (y/n)"
+if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
+
+$master = Read-Host -Prompt "Master hash" -AsSecureString
+$hashBytes = SecureStringToUtf8Bytes $master
+$master.Dispose()
+
+Write-Host "`n=== PHASE 2: APPLY RESETS ===" -ForegroundColor Cyan
+$failed = @()
+try {
+    foreach ($name in $toReset) {
+        $hex = DeriveHexBytes -HashBytes $hashBytes -Username $name
+        $pw  = HexBytesToSecureString -HexBytes $hex
+        try {
+            Set-LocalUser -Name $name -Password $pw
+            Write-Host "  OK    $name" -ForegroundColor Green
+        } catch {
+            Write-Host "  FAIL  $name" -ForegroundColor Red
+            $failed += $name
+        } finally {
+            $pw.Dispose()
+        }
+        Start-Sleep -Milliseconds 300
+    }
+} finally {
+    [Array]::Clear($hashBytes, 0, $hashBytes.Length)
+    Remove-Variable hashBytes, master -ErrorAction SilentlyContinue
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+}
+
+Write-Host "`n=== SUMMARY ===" -ForegroundColor Cyan
+Write-Host "  Reset:   $($toReset.Count - $failed.Count)" -ForegroundColor Green
+Write-Host "  Failed:  $($failed.Count)" -ForegroundColor $(if ($failed.Count) {'Red'} else {'Green'})
+if ($failed.Count) {
+    Write-Host "  Failures (retry manually):" -ForegroundColor Red
+    foreach ($f in $failed) { Write-Host "    $f" -ForegroundColor Red }
+}
 ```
 
 #### AD accounts (DC only)
+
 ```powershell
-Import-Module ActiveDirectory
-$excludedUsers = @("blackteam", "black-team", "krbtgt")
-$logFile = "$env:USERPROFILE\Desktop\domain_passwords.csv"
-"Username,NewPassword" | Out-File -FilePath $logFile
+#Requires -RunAsAdministrator
+#Requires -Modules ActiveDirectory
+$ErrorActionPreference = 'Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
 
-function Generate-RandomPassword {
-    param ([int]$length = 20)
-    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
-    -join ((1..$length) | ForEach-Object { Get-Random -InputObject $chars.ToCharArray() })
-}
+try {
+    Set-PSReadLineOption -HistorySaveStyle SaveNothing
+    $hp = (Get-PSReadlineOption).HistorySavePath
+    if ($hp -and (Test-Path $hp)) { Remove-Item $hp -Force }
+} catch {}
+Clear-History -ErrorAction SilentlyContinue
 
-Get-ADUser -Filter * | ForEach-Object {
-    if ($excludedUsers -contains $_.SamAccountName) { Write-Host "Skipping: $($_.SamAccountName)" -ForegroundColor Yellow; return }
-    $pw = Generate-RandomPassword
+# Accounts that must NEVER be reset (exact match, case-insensitive).
+# Administrator is left in by default — add it here if you want an emergency
+# login preserved.
+$ProtectedSam = @(
+    'krbtgt','Guest','DefaultAccount','WDAGUtilityAccount',
+    'blackteam','black-team',
+    'svcroot','svc_root','svc-root'
+)
+
+function SecureStringToUtf8Bytes {
+    param([System.Security.SecureString]$Secure)
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
     try {
-        Set-ADAccountPassword -Identity $_.SamAccountName -Reset -NewPassword (ConvertTo-SecureString $pw -AsPlainText -Force)
-        "$($_.SamAccountName),$pw" | Out-File -FilePath $logFile -Append
-        Write-Host "[+] $($_.SamAccountName)" -ForegroundColor Green
-    } catch { Write-Host "[-] $($_.SamAccountName): $_" -ForegroundColor Red }
+        $len = [System.Runtime.InteropServices.Marshal]::ReadInt32($bstr, -4) / 2
+        $chars = New-Object char[] $len
+        for ($i = 0; $i -lt $len; $i++) {
+            $chars[$i] = [char][System.Runtime.InteropServices.Marshal]::ReadInt16($bstr, $i*2)
+        }
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($chars)
+        [Array]::Clear($chars, 0, $chars.Length)
+        return ,$bytes
+    } finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
 }
-Write-Host "`n[*] Passwords saved to $logFile" -ForegroundColor Cyan
+
+function HexBytesToSecureString {
+    param([byte[]]$HexBytes)
+    $ss = New-Object System.Security.SecureString
+    foreach ($b in $HexBytes) { $ss.AppendChar([char]$b) }
+    $ss.MakeReadOnly()
+    [Array]::Clear($HexBytes, 0, $HexBytes.Length)
+    return $ss
+}
+
+function DeriveHexBytes {
+    param([byte[]]$HashBytes, [string]$Username)
+
+    $userB = [System.Text.Encoding]::UTF8.GetBytes($Username)
+    $buf = New-Object byte[] ($HashBytes.Length + 1 + $userB.Length + 1)
+    [Buffer]::BlockCopy($HashBytes, 0, $buf, 0, $HashBytes.Length)
+    $buf[$HashBytes.Length] = 58
+    [Buffer]::BlockCopy($userB, 0, $buf, $HashBytes.Length + 1, $userB.Length)
+    $buf[$buf.Length - 1] = 10
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $digest = $sha.ComputeHash($buf) } finally { $sha.Dispose() }
+
+    [Array]::Clear($buf, 0, $buf.Length)
+    [Array]::Clear($userB, 0, $userB.Length)
+
+    $hex = New-Object byte[] ($digest.Length * 2)
+    $tbl = [byte[]]@(48,49,50,51,52,53,54,55,56,57,97,98,99,100,101,102)
+    for ($i = 0; $i -lt $digest.Length; $i++) {
+        $hex[$i*2]     = $tbl[($digest[$i] -shr 4) -band 0x0F]
+        $hex[$i*2 + 1] = $tbl[ $digest[$i]        -band 0x0F]
+    }
+    [Array]::Clear($digest, 0, $digest.Length)
+    return ,$hex
+}
+
+Write-Host "`n=== PHASE 1: ENUMERATE AD USERS ===" -ForegroundColor Cyan
+try { $dc = (Get-ADDomain).PDCEmulator } catch { $dc = $env:LOGONSERVER.TrimStart('\') }
+Write-Host "  Target DC: $dc" -ForegroundColor Gray
+
+$all     = Get-ADUser -Filter * -Server $dc -Properties Enabled,SamAccountName
+$toReset = @()
+$skipped = @()
+foreach ($u in $all) {
+    $sam = $u.SamAccountName
+    if (-not $u.Enabled) { $skipped += [PSCustomObject]@{Name=$sam; Reason='disabled'}; continue }
+    if ($ProtectedSam -contains $sam) { $skipped += [PSCustomObject]@{Name=$sam; Reason='protected'}; continue }
+    $toReset += $u
+}
+Write-Host "  Will reset ($($toReset.Count)):" -ForegroundColor Yellow
+foreach ($u in $toReset) { Write-Host "    $($u.SamAccountName)" -ForegroundColor Yellow }
+Write-Host "  Skipped ($($skipped.Count)):" -ForegroundColor Gray
+foreach ($s in $skipped) { Write-Host "    $($s.Name)  [$($s.Reason)]" -ForegroundColor Gray }
+if ($toReset.Count -eq 0) { Write-Host "`n[OK] Nothing to reset." -ForegroundColor Green; return }
+
+Write-Host ""
+$confirm = Read-Host "Proceed with $($toReset.Count) AD password resets? (y/n)"
+if ($confirm -ne 'y') { Write-Host "  Aborted." -ForegroundColor Red; return }
+
+$master = Read-Host -Prompt "Master hash" -AsSecureString
+$hashBytes = SecureStringToUtf8Bytes $master
+$master.Dispose()
+
+Write-Host "`n=== PHASE 2: APPLY RESETS ===" -ForegroundColor Cyan
+$failed = @()
+try {
+    foreach ($u in $toReset) {
+        $sam = $u.SamAccountName
+        $hex = DeriveHexBytes -HashBytes $hashBytes -Username $sam
+        $pw  = HexBytesToSecureString -HexBytes $hex
+        try {
+            Set-ADAccountPassword -Identity $u -NewPassword $pw -Reset -Server $dc -Confirm:$false
+            Write-Host "  OK    $sam" -ForegroundColor Green
+        } catch {
+            Write-Host "  FAIL  $sam" -ForegroundColor Red
+            $failed += $sam
+        } finally {
+            $pw.Dispose()
+        }
+    }
+} finally {
+    [Array]::Clear($hashBytes, 0, $hashBytes.Length)
+    Remove-Variable hashBytes, master -ErrorAction SilentlyContinue
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+}
+
+Write-Host "`n=== SUMMARY ===" -ForegroundColor Cyan
+Write-Host "  Reset:   $($toReset.Count - $failed.Count)" -ForegroundColor Green
+Write-Host "  Failed:  $($failed.Count)" -ForegroundColor $(if ($failed.Count) {'Red'} else {'Green'})
+if ($failed.Count) {
+    Write-Host "  Failures (retry manually):" -ForegroundColor Red
+    foreach ($f in $failed) { Write-Host "    $f" -ForegroundColor Red }
+}
+```
+
+</details>
+
+<details>
+<summary><b>10. Recover Rotated Passwords</b> — Bulk-derive plaintext from master hash on a trusted offline machine (paste the "Will reset" list from step 9)</summary>
+
+> [!CAUTION]
+> **Run this on a separate trusted/offline machine — NOT on the target box.** The output CSV contains plaintext passwords for every listed user. Treat the file like a key.
+>
+> Standalone script: `scripts/Derive-Passwords-Bulk.ps1` (full version with path safety gates — OneDrive/Documents/UNC refusal, ACL lockdown, wipe instructions).
+
+**Minimal inline version** (copy-paste onto trusted machine):
+
+```powershell
+#Requires -Version 5.1
+param([Parameter(Mandatory)][string]$OutPath)
+
+$ErrorActionPreference = 'Stop'
+$full = [System.IO.Path]::GetFullPath($OutPath)
+if (-not (Test-Path -LiteralPath (Split-Path $full))) { throw "Parent dir missing: $(Split-Path $full)" }
+if ($full.StartsWith('\\')) { throw "UNC refused" }
+$up = $env:USERPROFILE.ToLower()
+if ($full.ToLower() -like "$up\onedrive*") { throw "OneDrive path refused" }
+if ($full.ToLower() -like "$up\documents*") { throw "Documents path refused (may sync)" }
+
+Write-Host "`nPaste usernames (whitespace-separated). Blank line to end." -ForegroundColor Cyan
+$lines = @(); while ($true) { $l = Read-Host; if ([string]::IsNullOrWhiteSpace($l)) { break }; $lines += $l }
+$users = @((($lines -join ' ') -split '\s+' | Where-Object { $_ -match '^[a-zA-Z0-9_.$-]+$' }) | Sort-Object -Unique)
+if (-not $users) { throw "No valid usernames" }
+Write-Host "`nParsed $($users.Count):" -ForegroundColor Yellow
+$users | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+if ((Read-Host "`nProceed? (y/n)") -ne 'y') { return }
+
+function SSToBytes($s) {
+    $b = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+    try {
+        $n = [System.Runtime.InteropServices.Marshal]::ReadInt32($b, -4) / 2
+        $c = New-Object char[] $n
+        for ($i = 0; $i -lt $n; $i++) { $c[$i] = [char][System.Runtime.InteropServices.Marshal]::ReadInt16($b, $i*2) }
+        $r = [System.Text.Encoding]::UTF8.GetBytes($c); [Array]::Clear($c, 0, $c.Length); ,$r
+    } finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+}
+function Derive($hb, $u) {
+    $ub = [System.Text.Encoding]::UTF8.GetBytes($u)
+    $buf = New-Object byte[] ($hb.Length + 1 + $ub.Length + 1)
+    [Buffer]::BlockCopy($hb, 0, $buf, 0, $hb.Length); $buf[$hb.Length] = 58
+    [Buffer]::BlockCopy($ub, 0, $buf, $hb.Length + 1, $ub.Length); $buf[$buf.Length-1] = 10
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $d = $sha.ComputeHash($buf) } finally { $sha.Dispose() }
+    [Array]::Clear($buf, 0, $buf.Length); [Array]::Clear($ub, 0, $ub.Length)
+    $s = New-Object System.Text.StringBuilder 64
+    foreach ($x in $d) { [void]$s.Append($x.ToString('x2')) }
+    [Array]::Clear($d, 0, $d.Length); $s.ToString()
+}
+
+$master = Read-Host -Prompt "Master hash" -AsSecureString
+$hb = SSToBytes $master; $master.Dispose()
+try {
+    $sw = [System.IO.StreamWriter]::new($full, $false, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        $sw.WriteLine("username,password")
+        foreach ($u in $users) { $sw.WriteLine("$u,$(Derive $hb $u)") }
+    } finally { $sw.Dispose() }
+} finally {
+    [Array]::Clear($hb, 0, $hb.Length); Remove-Variable hb, master -EA SilentlyContinue
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+}
+
+# Lock ACL to current user + SYSTEM + Administrators
+$acl = Get-Acl -LiteralPath $full; $acl.SetAccessRuleProtection($true, $false)
+foreach ($r in @($acl.Access)) { [void]$acl.RemoveAccessRule($r) }
+foreach ($sid in @(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().User,
+    (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')),
+    (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')))) {
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
+}
+Set-Acl -LiteralPath $full -AclObject $acl
+
+Write-Host "`nWrote $($users.Count) entries to: $full" -ForegroundColor Green
+Write-Host "When done: Remove-Item '$full' -Force; cipher /w:`"$(Split-Path $full)`"" -ForegroundColor Yellow
+```
+
+**After use, wipe the file and slack space:**
+```powershell
+Remove-Item -LiteralPath <csv-path> -Force
+cipher /w:<csv-directory>
 ```
 
 </details>
@@ -3418,6 +3829,29 @@ Write-Host "[+] WinRM killed, disabled, and blocked" -ForegroundColor Green
 qwinsta | ForEach-Object { if ($_ -match "\s+(\d+)\s+" -and ($_ -match "rdp-tcp|Disc")) { logoff $matches[1] } }
 # Kick a specific session (get ID from qwinsta)
 logoff SESSION_ID
+```
+
+#### Network Shares & Mounts
+```powershell
+# List all shares on this machine
+net share
+# Same via PowerShell (more detail — paths, permissions)
+Get-SmbShare | Format-Table Name, Path, Description -AutoSize
+# Show permissions on a specific share
+Get-SmbShareAccess -Name "ShareName"
+
+# List mapped network drives / remote mounts
+net use
+# Same via PowerShell
+Get-SmbMapping
+
+# Delete a share
+net share ShareName /delete
+# Delete via PowerShell
+Remove-SmbShare -Name "ShareName" -Force
+
+# Disconnect a mapped drive
+net use Z: /delete
 ```
 
 #### Sigcheck (verify signed binaries)
