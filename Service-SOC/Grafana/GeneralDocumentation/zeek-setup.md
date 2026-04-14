@@ -1,7 +1,7 @@
 # Zeek Documentation & Usage
 
 **Author:** Michael Leahy  
-**Last Updated:** April 11, 2026
+**Last Updated:** April 13, 2026
 
 ## Installing Zeek
 
