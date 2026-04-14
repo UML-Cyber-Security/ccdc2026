@@ -5,21 +5,35 @@ if [ "$EUID" -ne 0 ]; then
     exit
 fi
 
-# Paste your pre-generated master hash here
-MASTER_HASH="paste_your_hash_here"
+read -s -p "Enter master hash: " MASTER_HASH
+echo ""
+
+# Detect OS for password change method
+if [ "$(uname)" == "FreeBSD" ]; then
+    OS="freebsd"
+elif [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+else
+    OS="unknown"
+fi
 
 change_password() {
     local username=$1
 
-    # Skip blackteam accounts - out of scope
     if [[ "$username" == blackteam* ]]; then
         echo "Skipped (blackteam): $username"
         return
     fi
 
     local derived_pass=$(echo "$MASTER_HASH:$username" | openssl dgst -sha256 | awk '{print $2}')
-    local hashed=$(openssl passwd -6 "$derived_pass")
-    echo "$username:$hashed" | chpasswd -e
+
+    if [ "$OS" == "freebsd" ]; then
+        echo "$derived_pass" | pw usermod "$username" -h 0
+    else
+        echo "$username:$derived_pass" | chpasswd
+    fi
+
     echo "Changed: $username"
     sleep 2
 }
