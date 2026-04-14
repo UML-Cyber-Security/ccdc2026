@@ -39,7 +39,6 @@
       -w /var/log/lastlog -p wa -k logins
       -w /bin/su -p x -k priv_esc
 
-- name: Restart auditd service
-  ansible.builtin.service:
-    name: auditd
-    state: restarted
+- name: Load audit rules
+  ansible.builtin.command: augenrules --load
+  become: true

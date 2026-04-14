@@ -322,11 +322,11 @@
         "maxVizHeight": 300,
         "minVizHeight": 16,
         "minVizWidth": 8,
-        "namePlacement": "auto",
+        "namePlacement": "left",
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "sum"
           ],
           "fields": "",
           "values": false
@@ -340,7 +340,7 @@
         {
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sort_desc(\n  sum by (dst_ip) (\n    count_over_time(\n      {job=\"zeek\", log_type=\"conn\"}\n      | pattern `<_>\t<_>\t<src_ip>\t<_>\t<dst_ip>\t<_>\t<_>\t<_>`\n      | dst_ip != \"\"\n      [$__range]\n    )\n  )\n)",
+          "expr": "\n  sum by (dst_ip) (\n    count_over_time(\n      {job=\"zeek\", log_type=\"conn\"}\n      | pattern `<_>\t<_>\t<src_ip>\t<_>\t<dst_ip>\t<_>\t<_>\t<_>`\n      | dst_ip != \"\"\n      [$__range]\n    )\n  )\n",
           "queryType": "range",
           "refId": "A",
           "datasource": {
@@ -350,20 +350,6 @@
         }
       ],
       "title": "Top Destination IPs - inbound to public services",
-      "transformations": [
-        {
-          "id": "sortBy",
-          "options": {
-            "fields": {},
-            "sort": [
-              {
-                "desc": true,
-                "field": "{dst_ip=\"185.125.190.58\"}"
-              }
-            ]
-          }
-        }
-      ],
       "type": "bargauge"
     },
     {
@@ -523,7 +509,7 @@
         {
           "direction": "backward",
           "editorMode": "code",
-          "expr": "topk(30,\n  sum by (src_ip, dst_ip) (\n    count_over_time(\n      {job=\"zeek\", log_type=\"conn\"}\n      | pattern `<_>\t<_>\t<src_ip>\t<_>\t<dst_ip>\t<_>\t<_>\t<_>`\n      | src_ip != \"\"\n      | dst_ip != \"\"\n      [$__range]\n    )\n  )\n)",
+          "expr": "topk(20,\n  sum by (src_ip, dst_ip) (\n    count_over_time(\n      {job=\"zeek\", log_type=\"conn\"}\n      | pattern `<_>\t<_>\t<src_ip>\t<_>\t<dst_ip>\t<_>\t<_>\t<_>`\n      | src_ip != \"\"\n      | dst_ip != \"\"\n      | src_ip !~ `^(224\\.|239\\.|255\\.|0\\.0\\.0\\.0|ff0|fe80)`\n      | dst_ip !~ `^(224\\.|239\\.|255\\.|0\\.0\\.0\\.0|ff0|fe80)`\n      [$__range]\n    )\n  )\n)",
           "queryType": "range",
           "refId": "A",
           "datasource": {
@@ -936,7 +922,12 @@
       "options": {
         "cellHeight": "sm",
         "showHeader": true,
-        "sortBy": []
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Total"
+          }
+        ]
       },
       "pluginVersion": "12.4.2",
       "targets": [
@@ -955,24 +946,23 @@
       "title": "Connections on non-standard ports",
       "transformations": [
         {
-          "id": "labelsToFields",
-          "options": {}
-        },
-        {
-          "id": "merge",
-          "options": {}
+          "id": "reduce",
+          "options": {
+            "labelsToFields": true,
+            "reducers": [
+              "sum"
+            ]
+          }
         },
         {
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true
+              "Field": true
             },
             "includeByName": {},
             "indexByName": {},
-            "renameByName": {
-              "Value": "Connections"
-            }
+            "renameByName": {}
           }
         }
       ],
@@ -1274,6 +1264,6 @@
   "timezone": "browser",
   "title": "Zeek Dashboard",
   "uid": "add44sp",
-  "version": 57,
+  "version": 61,
   "weekStart": ""
 }

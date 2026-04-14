@@ -1,7 +1,7 @@
 ---
 - name: Install logging tools
-  hosts: ADD_HOSTS_HERE
+  hosts: ubuntu
   become: true
   roles:
-    - Sysmon
     - Auditd
+    - Sysmon
