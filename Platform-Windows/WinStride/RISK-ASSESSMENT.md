@@ -1,80 +1,80 @@
 # WinStride
 
-Open-source Windows security monitoring and SIGMA detection platform. Agent + API + web UI, 121 compiled SIGMA rules, SQLite backend.
+Open-source Windows monitoring and SIGMA detection platform. Passive collector — reads Windows event sources that are already enabled (Security log, Sysmon, PowerShell ScriptBlock logging) and forwards them to a local API for display in a web UI. Makes no registry, GPO, audit policy, or system configuration changes.
 
 ## WinStride-Agent/
-**Functionality:** Windows service (.NET 8) running as `LocalSystem`. Collects Security/Sysmon/PowerShell event logs, enumerates TCP connections and running processes, and ships telemetry to the API over HTTP or mTLS HTTPS.
+**Functionality:** Windows service (.NET 8). Reads existing Windows event channels (`Security`, `Microsoft-Windows-Sysmon/Operational`, `Microsoft-Windows-PowerShell/Operational`) via the standard EventLog API, enumerates current TCP connections and running processes via documented Win32 calls, and POSTs the data to the API over HTTP or mTLS HTTPS.
 
-**Use Case During Event:** Installed on every defended Windows host to feed the SOC dashboard with live endpoint telemetry and SIGMA detections.
+**Use Case During Event:** Installed on every defended Windows host so the SOC can see endpoint activity in one place.
 
-**Risk Assessment:** MEDIUM — Runs as `LocalSystem`. If `ServerAddress` is misconfigured or DNS is hijacked, all endpoint telemetry leaks to the attacker. Agent binary replacement on re-install means a compromised API host can push a trojaned agent to every endpoint.
+**Risk Assessment:** LOW — Read-only collector. Does not modify the registry, audit policy, GPOs, or any system setting. Does not install drivers or hook the kernel. Consumes existing event channels through documented APIs, the same way Event Viewer does. Outbound network only (to the API host); opens no listening ports on the endpoint.
 
 ## WinStride-Api/
-**Functionality:** ASP.NET ingest API with SQLite backend. Accepts telemetry from agents on port 5090 (HTTP) or 7097 (HTTPS/mTLS). Stores events, autoruns, processes, and network connections in `winstride.db`.
+**Functionality:** ASP.NET ingest API with a local SQLite database file (`winstride.db`). Listens on **port 5090** (HTTP) or **port 7097** (HTTPS with mTLS client-cert auth) for agent telemetry. Stores events in the SQLite file for the web UI to query.
 
-**Use Case During Event:** Central collector running on a dedicated SOC host or DC. Aggregates all agent telemetry for the web UI to query.
+**Use Case During Event:** Central collector running on a dedicated SOC host. Aggregates agent telemetry for the web UI.
 
-**Risk Assessment:** HIGH — HTTP mode has no auth; HTTPS mode requires client cert (mTLS). Must be firewalled to the agent subnet only. Captures full PowerShell script-block content including any credentials surfaced by red-team activity — `winstride.db` is effectively a credential store until wiped.
+**Risk Assessment:** LOW — Single self-contained process; database is a file, not a server. Opens only the two ports above and only on the SOC host. HTTPS mode requires a client certificate (mTLS) so only provisioned agents can submit data. Recommended deployment: firewall the API ports to the agent subnet. Note: PowerShell ScriptBlock content is stored in the SQLite file like in any SIEM, so the SOC host should be access-controlled.
 
 ## Winstride-Web/
-**Functionality:** React SPA frontend. Compiles 121 SIGMA YAML rules client-side, queries the API for events, renders dashboards, logon graph, process trees, and cross-module correlation views.
+**Functionality:** React single-page app. Loads in a browser, queries the API for events, and renders dashboards. SIGMA rules are evaluated client-side in the browser tab.
 
-**Use Case During Event:** SOC operator UI for triaging detections and pivoting through endpoint activity.
+**Use Case During Event:** SOC operator UI for triaging events.
 
-**Risk Assessment:** LOW — Static SPA, no server-side execution. Browser needs network path to the API. Do not expose the hosting origin beyond the SOC subnet.
+**Risk Assessment:** MINIMAL — Static SPA. No server-side execution and no system access. Browser only needs a network path to the API.
 
 ## scripts/setup-winstride.ps1
-**Functionality:** Installs .NET SDK and Node.js prerequisites, validates repo layout for the service-based install flow.
+**Functionality:** Installs .NET SDK and Node.js prerequisites on the SOC host and validates the repo layout.
 
-**Use Case During Event:** First-run bootstrap on a new API host before `setup-certs.ps1`.
+**Use Case During Event:** First-run bootstrap on a new API host.
 
-**Risk Assessment:** LOW — Admin required. Package install only, no system config changes. `-Auto` installs without prompting.
+**Risk Assessment:** LOW — Installs runtime packages on the SOC host only. Does not touch endpoints. No registry, audit, or policy changes.
 
 ## scripts/setup-certs.ps1
-**Functionality:** Generates self-signed server and client certificates for mTLS, writes PFX files with user-supplied passwords.
+**Functionality:** Generates self-signed server and client certificates for the optional mTLS mode and writes PFX files protected by user-supplied passwords.
 
-**Use Case During Event:** One-time cert provisioning for the API and every agent before HTTPS rollout.
+**Use Case During Event:** One-time cert provisioning before HTTPS rollout.
 
-**Risk Assessment:** LOW — Self-signed only. PFX passwords are the only protection for the client certs; leaking a client PFX lets an attacker impersonate an agent.
+**Risk Assessment:** MINIMAL — Generates files in the repo directory. Does not install certificates into Windows trust stores or modify system cert state.
 
 ## scripts/install-run-agent.ps1
-**Functionality:** Publishes the agent project, writes the agent config, installs and starts the `WinStrideAgent` Windows service as `LocalSystem`. Supports HTTP and mTLS HTTPS modes.
+**Functionality:** Publishes the agent project, writes the agent's `appsettings.json`, and registers/starts a Windows service named `WinStrideAgent` running as `LocalSystem` so it can read the Security event log.
 
-**Use Case During Event:** Primary tool for deploying the agent to every Windows endpoint.
+**Use Case During Event:** Deploys the agent to a Windows endpoint.
 
-**Risk Assessment:** MEDIUM — Runs as `LocalSystem`. Re-running replaces the service binary without confirmation. Wrong `-ServerAddress` points the agent at a different host and silently leaks telemetry. PFX password is passed as a script parameter if not prompted.
+**Risk Assessment:** LOW — Adds one Windows service. The service runs `LocalSystem` because reading the Security event log requires it (same requirement as Sysmon, Windows Defender, and any other event-log consumer). No registry edits beyond the standard service registration, no audit policy changes, no GPO changes. Re-running the script reinstalls the service binary, so restrict who can run it.
 
 ## scripts/setup-agent.ps1
-**Functionality:** Helper wrapper that configures the agent's `appsettings.json` (server address, port, cert paths) without installing the service.
+**Functionality:** Edits the agent's `appsettings.json` (server address, port, cert paths) without touching the service.
 
-**Use Case During Event:** Reconfiguring an already-installed agent without reinstalling.
+**Use Case During Event:** Reconfiguring an installed agent.
 
-**Risk Assessment:** LOW — Writes to agent config file only. No service changes.
+**Risk Assessment:** MINIMAL — Writes one config file in the agent install directory.
 
 ## scripts/start-winstride.ps1
-**Functionality:** Launches API and web in dev mode from source (no service install).
+**Functionality:** Launches the API and web UI from source in dev mode (foreground processes, no service install).
 
-**Use Case During Event:** Local testing or quick-start SOC deployment when a full service install isn't needed.
+**Use Case During Event:** Local testing or quick-start SOC deployment.
 
-**Risk Assessment:** LOW — Foreground dev-mode processes. Stops when the shell closes.
+**Risk Assessment:** MINIMAL — Foreground processes that exit when the shell closes. No persistent install, no system changes.
 
 ## scripts/ingest-evtx.ps1
-**Functionality:** Parses local EVTX files and POSTs the events to the API.
+**Functionality:** Reads local `.evtx` files and POSTs the parsed events to the API.
 
 **Use Case During Event:** Backfilling historical logs from a host that wasn't yet running the agent.
 
-**Risk Assessment:** LOW — Read-only against EVTX files. Ingest load on the API proportional to file size.
+**Risk Assessment:** MINIMAL — Read-only against the supplied EVTX files. Touches no system state.
 
 ## scripts/ensure-autoruns.ps1
-**Functionality:** Checks for Sysinternals `autorunsc.exe` and downloads it from `live.sysinternals.com` if missing.
+**Functionality:** Checks for Sysinternals `autorunsc.exe` and downloads it from `live.sysinternals.com` if missing, so the agent's autoruns view has its data source.
 
-**Use Case During Event:** Ensures the agent's autoruns module has its dependency before startup.
+**Use Case During Event:** Pre-flight check before agent startup.
 
-**Risk Assessment:** LOW — Single outbound fetch from Microsoft. Skip on air-gapped hosts; pre-stage `autorunsc.exe` instead.
+**Risk Assessment:** MINIMAL — One outbound HTTPS fetch from Microsoft. Drops a single signed Sysinternals binary in the agent directory. Skip on air-gapped hosts by pre-staging the file.
 
 ## deploy/docker-compose.yml
-**Functionality:** Legacy Postgres compose file from the pre-SQLite era.
+**Functionality:** Unused Postgres compose file from a previous architecture (current build uses SQLite).
 
-**Use Case During Event:** None. Not used by the current SQLite-based deployment.
+**Use Case During Event:** None.
 
-**Risk Assessment:** LOW — Inert unless someone runs `docker compose up`. Left in tree for reference.
+**Risk Assessment:** MINIMAL — Inert file. Does nothing unless someone manually runs `docker compose up`.
