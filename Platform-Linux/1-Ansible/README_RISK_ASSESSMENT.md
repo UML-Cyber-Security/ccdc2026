@@ -1,7 +1,7 @@
 This will outline the operations and risks of all scripts in this directory and its sub-directories.
 
 Enumeration
-Scripts/Playbooks here just "enumerate" the target environment, logging any users, network traffic, processes, services, crons, keys, etc. For further description reference the readme.md file in the Enumeration folder.
+Scripts/Playbooks here just "enumerate" the target environment, logging any users, network traffic, processes, services, crons, keys, etc. For further description of separate tooling reference the readme.md file in the Enumeration folder.
 RISK: Low - Since nothing is installed, except for Lin_Peas, and nothing else is modified on the systems, this scripts/playbooks should not pose any risk to the environment.
 
 Incident-Response (user-create.yaml)
